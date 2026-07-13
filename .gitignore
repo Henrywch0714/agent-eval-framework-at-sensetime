@@ -1,0 +1,26 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+wch/
+.venv/
+venv/
+
+# Local real-capture artifacts
+logs/
+reports/*
+!reports/.gitkeep
+
+# Local/private domain profiles
+domain_profiles/
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Local secrets and environment files
+.env
+.env.*
