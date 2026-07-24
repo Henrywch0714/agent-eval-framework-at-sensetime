@@ -85,6 +85,38 @@ h1 {
   font-size: 17px;
 }
 
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.primary-action,
+.secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: 820;
+}
+
+.primary-action {
+  border: 1px solid #1d4ed8;
+  background: var(--blue);
+  color: white;
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.2);
+}
+
+.secondary-action {
+  border: 1px solid var(--line);
+  background: white;
+  color: #243042;
+}
+
 section {
   margin: 22px 0;
   background: var(--white);
@@ -111,6 +143,84 @@ h2 {
 }
 
 .content { padding: 22px; }
+
+.formula {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.formula p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.formula code {
+  display: block;
+  overflow-x: auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #172554;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.metric-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+  padding: 16px;
+}
+
+.metric-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.metric-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.weight {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: white;
+  color: #26303d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.metric-card p {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.metric-card b {
+  color: #1f2937;
+}
+
+.example {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--amber);
+  border-radius: 0 8px 8px 0;
+  background: #fff8ec;
+  color: #563300;
+}
 
 .category-grid {
   display: grid;
@@ -320,7 +430,8 @@ footer {
   }
 
   .category-grid,
-  .arrow-flow {
+  .arrow-flow,
+  .metric-grid {
     grid-template-columns: 1fr;
   }
 
