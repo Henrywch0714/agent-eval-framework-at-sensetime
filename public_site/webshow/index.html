@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Eval Report Visualizer</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #16181d;
+      --muted: #6c7280;
+      --line: #e5e7eb;
+      --good: #0f9f6e;
+      --warn: #d97706;
+      --bad: #dc2626;
+      --blue: #2563eb;
+      --soft-blue: #dbeafe;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 42px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .hint {
+      color: var(--muted);
+      margin: 4px 0 0;
+      max-width: 760px;
+    }
+
+    .upload {
+      border: 1px dashed #b7bfcc;
+      background: #fbfcfe;
+      border-radius: var(--radius);
+      padding: 18px;
+      display: grid;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .select-panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: grid;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .upload-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    input[type="file"] {
+      max-width: 100%;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: white;
+    }
+
+    select {
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: white;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .score-wrap {
+      display: grid;
+      place-items: center;
+      gap: 10px;
+    }
+
+    .score-ring {
+      --score: 0;
+      --color: var(--bad);
+      width: 178px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at center, white 0 58%, transparent 59%),
+        conic-gradient(var(--color) calc(var(--score) * 1%), #eef0f3 0);
+      display: grid;
+      place-items: center;
+    }
+
+    .score-ring strong {
+      font-size: 40px;
+      line-height: 1;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .kpi {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      background: #fbfbfc;
+    }
+
+    .snapshot {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfe;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .snapshot-item {
+      display: grid;
+      gap: 4px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .snapshot-item:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .snapshot-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .snapshot-line {
+      font-size: 13px;
+      color: var(--ink);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .kpi b {
+      display: block;
+      font-size: 20px;
+      line-height: 1.1;
+    }
+
+    .kpi span, .small {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #eef2ff;
+      color: #3730a3;
+      white-space: nowrap;
+    }
+
+    .pill.good { background: #dcfce7; color: #166534; }
+    .pill.bad { background: #fee2e2; color: #991b1b; }
+    .pill.warn { background: #fef3c7; color: #92400e; }
+
+    .case-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    details.case {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: white;
+      overflow: hidden;
+    }
+
+    details.case summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+
+    details.case summary::-webkit-details-marker { display: none; }
+
+    .case-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .case-title {
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mini-score {
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    .bars {
+      display: grid;
+      gap: 7px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 132px 1fr 34px;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+    }
+
+    .track {
+      height: 8px;
+      border-radius: 999px;
+      background: #edf0f4;
+      overflow: hidden;
+    }
+
+    .fill {
+      width: calc(var(--value) * 1%);
+      height: 100%;
+      background: var(--color);
+      border-radius: inherit;
+    }
+
+    .case-body {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .deduction-summary {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      background: #fbfcfe;
+      display: grid;
+      gap: 6px;
+    }
+
+    details.deductions {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    details.deductions summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    details.deductions summary::-webkit-details-marker { display: none; }
+
+    .deduction-list {
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .deduction-item {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+      background: #fbfbfc;
+    }
+
+    .deduction-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .deduction-title {
+      font-weight: 700;
+    }
+
+    .deduction-meta {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .muted-box {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 9px;
+      background: #f8fafc;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    pre {
+      margin: 0;
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      background: #0f172a;
+      color: #e5e7eb;
+      font-size: 12px;
+    }
+
+    .empty {
+      padding: 36px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: white;
+    }
+
+    @media (max-width: 820px) {
+      .grid { grid-template-columns: 1fr; }
+      header { align-items: start; flex-direction: column; }
+      .kpis { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Agent Eval Visual Report</h1>
+        <p class="hint">选择一个 run 文件夹，或选择 <code>*_eval_results.jsonl</code> / <code>*_eval_report.md</code>。页面只做本地解析，不上传数据。</p>
+      </div>
+      <span class="pill">visual-first</span>
+    </header>
+
+    <section class="upload">
+      <div class="upload-row">
+        <strong>Upload Report</strong>
+        <span class="small">也可以上传外部 eval_results.jsonl / eval_report.md</span>
+      </div>
+      <input id="fileInput" type="file" multiple webkitdirectory>
+      <input id="singleFileInput" type="file" accept=".jsonl,.md,.markdown">
+    </section>
+
+    <section class="select-panel">
+      <div class="upload-row">
+        <strong>Indexed Reports</strong>
+        <span id="reportCount" class="small">loading</span>
+      </div>
+      <select id="reportSelect">
+        <option value="">选择一个已索引报告</option>
+      </select>
+    </section>
+
+    <section id="app" class="empty">
+      还没有加载报告。
+    </section>
+  </main>
+
+  <script src="report_data.js"></script>
+  <script>
+    const app = document.getElementById("app");
+    const fileInput = document.getElementById("fileInput");
+    const singleFileInput = document.getElementById("singleFileInput");
+    const reportSelect = document.getElementById("reportSelect");
+    const reportCount = document.getElementById("reportCount");
+
+    initializeIndexedReports();
+
+    fileInput.addEventListener("change", async event => {
+      const files = [...event.target.files];
+      await loadFiles(files);
+    });
+
+    singleFileInput.addEventListener("change", async event => {
+      const files = [...event.target.files];
+      await loadFiles(files);
+    });
+
+    reportSelect.addEventListener("change", event => {
+      const id = event.target.value;
+      const report = indexedReports().find(item => item.id === id);
+      if (report) render({ source: report.name, cases: report.cases, overview: report.overview || [] });
+    });
+
+    function initializeIndexedReports() {
+      const reports = indexedReports();
+      reportCount.textContent = reports.length ? `${reports.length} reports indexed` : "no indexed report_data.js";
+      reportSelect.disabled = reports.length === 0;
+      for (const report of reports) {
+        const option = document.createElement("option");
+        option.value = report.id;
+        option.textContent = report.name;
+        reportSelect.appendChild(option);
+      }
+      if (reports.length) {
+        reportSelect.value = reports[0].id;
+        render({ source: reports[0].name, cases: reports[0].cases, overview: reports[0].overview || [] });
+      }
+    }
+
+    function indexedReports() {
+      return Array.isArray(window.AGENT_EVAL_REPORTS) ? window.AGENT_EVAL_REPORTS : [];
+    }
+
+    async function loadFiles(files) {
+      if (!files.length) return;
+      const evalResults = pick(files, "_eval_results.jsonl") || pick(files, ".jsonl");
+      const evalReport = pick(files, "_eval_report.md") || pick(files, ".md");
+      const normalizedRuns = pick(files, "_normalized_runs.jsonl");
+      let data;
+      if (evalResults) {
+        data = parseJsonl(await evalResults.text(), evalResults.name);
+      } else if (evalReport) {
+        data = parseMarkdown(await evalReport.text(), evalReport.name);
+      } else {
+        renderError("没有找到可解析的 eval_results.jsonl 或 eval_report.md。");
+        return;
+      }
+      if (normalizedRuns) {
+        data.overview = parseOverview(await normalizedRuns.text());
+      }
+      render(data);
+    }
+
+    function pick(files, suffix) {
+      return files.find(file => file.name.endsWith(suffix));
+    }
+
+    function parseJsonl(text, name) {
+      const cases = text.split(/\r?\n/)
+        .filter(Boolean)
+        .map(line => JSON.parse(line));
+      return { source: name, cases };
+    }
+
+    function parseOverview(text) {
+      return text.split(/\r?\n/)
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+        .map(run => {
+          const observed = run.observed || {};
+          const understanding = observed.task_understanding || {};
+          const toolArgs = observed.tool_args || {};
+          const oracle = observed.oracle_evidence || {};
+          const finalResponse = observed.final_response || {};
+          return {
+            run_id: run.run_id,
+            user_task: clip(run.user_task || ""),
+            search_type: clip(understanding.intent || toolArgs.search_type || oracle.query_type || ""),
+            web_answer: clip(finalResponse.text || "")
+          };
+        });
+    }
+
+    function parseMarkdown(text, name) {
+      const cases = [];
+      const sections = text.split(/\n###\s+/).slice(1);
+      for (const section of sections) {
+        const title = section.split("\n")[0] || "CASE";
+        const caseId = (title.match(/([A-Z]+[-\w]*\d+)/) || [title.trim()])[0];
+        const scoreBlock = section.match(/\| Dimension \| Score \|[\s\S]*?(?=\n\n|####)/);
+        const dimensionScores = {};
+        if (scoreBlock) {
+          for (const line of scoreBlock[0].split(/\r?\n/)) {
+            const match = line.match(/^\|\s*([a-z_]+)\s*\|\s*(\d+)\s*\|/);
+            if (match) dimensionScores[match[1]] = Number(match[2]);
+          }
+        }
+        const summaryRow = text.match(new RegExp("\\| `" + escapeRegExp(caseId) + "` \\| `([^`]*)` \\| (\\d+) \\| (true|false) \\| ([^|]*) \\|"));
+        cases.push({
+          case_id: caseId,
+          run_id: summaryRow ? summaryRow[1] : null,
+          score: summaryRow ? Number(summaryRow[2]) : avg(Object.values(dimensionScores)),
+          passed: summaryRow ? summaryRow[3] === "true" : false,
+          failure_types: summaryRow ? summaryRow[4].split(",").map(v => v.trim()).filter(v => v && v !== "-") : [],
+          dimension_scores: dimensionScores,
+          notes: extractNotes(section)
+        });
+      }
+      return { source: name, cases };
+    }
+
+    function extractNotes(section) {
+      const block = section.match(/Failures And Notes[\s\S]*?(?=\n####|\n###|$)/);
+      if (!block) return [];
+      return block[0].split(/\r?\n/)
+        .filter(line => line.startsWith("- "))
+        .map(line => line.slice(2));
+    }
+
+    function render(data) {
+      const cases = (data.cases || []).filter(isObservedCase);
+      if (!cases.length) {
+        renderError("报告中没有已运行的 case 数据。");
+        return;
+      }
+      const average = avg(cases.map(item => Number(item.score || 0)));
+      const passed = cases.filter(item => item.passed).length;
+      const failures = cases.flatMap(item => item.failure_types || []).filter(Boolean);
+      const dims = aggregateDimensions(cases);
+      const color = scoreColor(average);
+      const overview = data.overview || [];
+
+      app.className = "grid";
+      app.innerHTML = `
+        <aside class="panel">
+          ${renderSnapshot(overview)}
+          <div class="score-wrap">
+            <div class="score-ring" style="--score:${average};--color:${color}">
+              <strong>${average}</strong>
+            </div>
+            <div class="small">${escapeHtml(data.source)}</div>
+          </div>
+          <div class="kpis">
+            <div class="kpi"><b>${cases.length}</b><span>Run Cases</span></div>
+            <div class="kpi"><b>${passed}</b><span>Passed</span></div>
+            <div class="kpi"><b>${failures.length}</b><span>Failures</span></div>
+          </div>
+          <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+          <div class="bars">${renderBars(dims)}</div>
+        </aside>
+        <section class="panel">
+          <div class="toolbar">
+            <strong>Case Scores</strong>
+            <span class="pill ${cases.length && passed === cases.length ? "good" : "warn"}">${cases.length ? Math.round(passed * 100 / cases.length) : 0}% pass rate</span>
+          </div>
+          <div class="case-grid">
+            ${cases.map(renderCase).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    function renderSnapshot(overview) {
+      if (!overview.length) return "";
+      return `
+        <div class="snapshot">
+          ${overview.slice(0, 3).map(item => `
+            <div class="snapshot-item">
+              <div class="snapshot-title">
+                <strong>${escapeHtml(item.run_id || "RUN")}</strong>
+                <span class="pill">${escapeHtml(item.search_type || "-")}</span>
+              </div>
+              <div class="snapshot-line" title="${escapeHtml(item.user_task || "-")}">${escapeHtml(item.user_task || "-")}</div>
+              <div class="snapshot-line small" title="${escapeHtml(item.web_answer || "-")}">${escapeHtml(item.web_answer || "-")}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderCase(item) {
+      const score = Number(item.score || 0);
+      const status = item.passed ? "good" : "bad";
+      const failures = (item.failure_types || []).filter(Boolean);
+      const notes = item.notes || [];
+      const judge = item.llm_assistant || null;
+      const deductions = item.deductions || [];
+      const deductionSummary = item.deduction_summary || {};
+      return `
+        <details class="case">
+          <summary>
+            <div class="case-top">
+              <span class="case-title">${escapeHtml(item.case_id || "CASE")}</span>
+              <span class="mini-score" style="color:${scoreColor(score)}">${score}</span>
+            </div>
+            <div>
+              <span class="pill ${status}">${item.passed ? "passed" : "failed"}</span>
+              ${failures.slice(0, 2).map(f => `<span class="pill bad">${escapeHtml(f)}</span>`).join(" ")}
+            </div>
+            <div class="bars">${renderBars(item.dimension_scores || {})}</div>
+          </summary>
+          <div class="case-body">
+            ${renderDeductions(deductions, deductionSummary)}
+            ${judge ? `<div><span class="pill">LLM Assistant</span> <span class="small">${escapeHtml((judge.assistant_modules || ["judge"]).join(", "))} / ${escapeHtml(judge.model || "-")} / ${judge.available ? "available" : "unavailable"}</span></div>` : ""}
+            ${notes.length ? `<pre>${escapeHtml(notes.join("\n"))}</pre>` : `<span class="small">No notes.</span>`}
+          </div>
+        </details>
+      `;
+    }
+
+    function renderDeductions(deductions, summary) {
+      const deterministic = (summary && summary.deterministic) || "暂无扣分总结。";
+      const llmInterface = (summary && summary.llm_interface) || {};
+      return `
+        <div class="deduction-summary">
+          <strong>Deduction Summary</strong>
+          <div>${escapeHtml(deterministic)}</div>
+          <div class="muted-box">
+            LLM 一句话总结接口：
+            ${llmInterface.available ? escapeHtml(llmInterface.output || "-") : "预留未调用"}
+          </div>
+        </div>
+        <details class="deductions">
+          <summary>
+            <strong>扣分明细</strong>
+            <span class="pill ${deductions.length ? "warn" : "good"}">${deductions.length} items</span>
+          </summary>
+          <div class="deduction-list">
+            ${deductions.length ? deductions.map(renderDeductionItem).join("") : `<span class="small">没有结构化扣分点。</span>`}
+          </div>
+        </details>
+      `;
+    }
+
+    function renderDeductionItem(item) {
+      const severity = String(item.severity || "low");
+      const pillClass = severity === "critical" || severity === "high" ? "bad" : (severity === "medium" ? "warn" : "good");
+      const title = item.kind === "failure"
+        ? `${item.failure_type || "failure"}`
+        : `${shortName(item.dimension || "dimension")} ${Number.isFinite(Number(item.score)) ? item.score : ""}`;
+      const impact = item.weighted_impact !== undefined ? `weighted ${item.weighted_impact}` : "";
+      const points = item.deduction_points !== undefined ? `-${item.deduction_points}` : "";
+      return `
+        <div class="deduction-item">
+          <div class="deduction-head">
+            <span class="deduction-title">${escapeHtml(title)}</span>
+            <span class="deduction-meta">
+              <span class="pill ${pillClass}">${escapeHtml(severity)}</span>
+              ${points ? `<span class="pill">${escapeHtml(points)}</span>` : ""}
+              ${impact ? `<span class="pill">${escapeHtml(impact)}</span>` : ""}
+            </span>
+          </div>
+          <div>${escapeHtml(item.reason || "-")}</div>
+          <div class="small"><strong>Evidence:</strong> ${escapeHtml(item.evidence || "-")}</div>
+          <div class="small"><strong>Suggestion:</strong> ${escapeHtml(item.suggestion || "-")}</div>
+        </div>
+      `;
+    }
+
+    function isObservedCase(item) {
+      const failures = item.failure_types || [];
+      return Boolean(item.run_id) && !failures.includes("case_not_observed");
+    }
+
+    function renderBars(scores) {
+      const entries = Object.entries(scores || {});
+      if (!entries.length) return `<span class="small">No dimension data.</span>`;
+      return entries.map(([key, value]) => {
+        const safe = Math.max(0, Math.min(100, Number(value || 0)));
+        return `
+          <div class="bar-row">
+            <span title="${escapeHtml(key)}">${escapeHtml(shortName(key))}</span>
+            <div class="track"><div class="fill" style="--value:${safe};--color:${scoreColor(safe)}"></div></div>
+            <span>${safe}</span>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function aggregateDimensions(cases) {
+      const buckets = {};
+      for (const item of cases) {
+        for (const [key, value] of Object.entries(item.dimension_scores || {})) {
+          buckets[key] ||= [];
+          buckets[key].push(Number(value || 0));
+        }
+      }
+      return Object.fromEntries(Object.entries(buckets).map(([key, values]) => [key, avg(values)]));
+    }
+
+    function avg(values) {
+      const nums = values.map(Number).filter(Number.isFinite);
+      if (!nums.length) return 0;
+      return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+    }
+
+    function scoreColor(score) {
+      if (score >= 80) return "var(--good)";
+      if (score >= 60) return "var(--warn)";
+      return "var(--bad)";
+    }
+
+    function shortName(key) {
+      return key
+        .replace("task_understanding", "understanding")
+        .replace("evidence_grounding", "grounding")
+        .replace("response_quality", "response")
+        .replace("tool_selection", "tool select")
+        .replace("tool_arguments", "arguments")
+        .replace("skill_selection", "skill select")
+        .replace("tool_order", "tool order")
+        .replace("data_flow", "data flow");
+    }
+
+    function clip(value, limit = 50) {
+      const text = String(value ?? "").replace(/\s+/g, " ").trim();
+      return text.length <= limit ? text : text.slice(0, limit - 1) + "…";
+    }
+
+    function renderError(message) {
+      app.className = "empty";
+      app.textContent = message;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function escapeRegExp(value) {
+      return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  </script>
+</body>
+</html>

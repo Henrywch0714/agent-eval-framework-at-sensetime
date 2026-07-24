@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Core Harness Details</title>
+  <link rel="stylesheet" href="detail.css" />
+</head>
+<body>
+  <header>
+    <div class="shell nav">
+      <a class="brand" href="index.html">← 三层架构首页</a>
+      <nav class="links">
+        <a href="domain-profile.html">Domain Profile</a>
+        <a href="profile-kits.html">Profile Kits</a>
+        <a href="core-harness.html">Core Harness</a>
+        <a href="../webshow/index.html">评分可视化网站</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="hero">
+      <h1>Core Harness：评估内核如何执行</h1>
+      <p class="lead">Core Harness 是可复用执行层。它不写死公安业务规则，而是接收编译后的 profile，完成真实网页监听、日志标准化、case 匹配、工具链校验、证据 grounding、LLM Assistant 辅助评分、报告生成和 webshow 索引刷新。</p>
+    </div>
+
+    <section>
+      <div class="section-head">
+        <h2>Core 文件的二次归类</h2>
+        <p>当前内核可以按“命令入口、配置编译、捕获标准化、证据链、评分裁判、报告展示”六组理解。</p>
+      </div>
+      <div class="content category-grid">
+        <div class="category">
+          <h3>1. 命令入口与运行调度</h3>
+          <div class="category-body">
+            <p>负责把命令行参数、真实监听、已有日志回放和报告输出串成一次完整评测。</p>
+            <div class="file-list">
+              <details class="file-detail">
+                <summary>main.py</summary>
+                <div>
+                  <p>命令入口，支持 <code>--target &lt;profile&gt;.&lt;mode&gt;.&lt;suite&gt;</code> 快速切换场景、运行模式和测试集；真实模式会先打开浏览器监听，再进入评估。</p>
+                  <pre><code>parser.add_argument("--target", default="")
+parser.add_argument("--mode", choices=["mock", "events", "real"], default="mock")
+_apply_target(args)</code></pre>
+                  <p class="summary-line">总结：它让不同 Agent / 不同场景可以通过一个参数切换。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>runner.py</summary>
+                <div>
+                  <p>评估总调度器，执行错误闸门、加载 case、标准化日志、匹配 run、调用 LLM Assistant、打分并写出报告；未匹配到真实运行的 case 会被跳过。</p>
+                  <pre><code>matched_run = match_case_to_run(case, runs)
+if matched_run is None:
+    continue
+result = score_case(case, matched_run, profile=profile, llm_assistant=judge)</code></pre>
+                  <p class="summary-line">总结：它只评价真正跑过的任务，避免“未跑 case”污染报告。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>schema.py</summary>
+                <div>
+                  <p>定义核心评分结果对象和 schema 名称，是 JSONL、Markdown 与 webshow 之间共享的数据形状。</p>
+                  <pre><code>@dataclass
+class ScoreResult:
+    case_id: str
+    run_id: str | None
+    dimension_scores: dict[str, int]</code></pre>
+                  <p class="summary-line">总结：它让所有评估产物有统一骨架。</p>
+                </div>
+              </details>
+            </div>
+            <p class="summary-line">总结：入口与调度层把一次测试变成可重复执行的流水线。</p>
+          </div>
+        </div>
+
+        <div class="category">
+          <h3>2. Profile 加载、编译与体检</h3>
+          <div class="category-body">
+            <p>负责把 domain profile 和 profile kits 合并成最终可执行配置，并检查配置质量。</p>
+            <div class="file-list">
+              <details class="file-detail">
+                <summary>profile.py</summary>
+                <div>
+                  <p>读取领域入口文件，加载各个 JSON 配置，调用编译器合并 kit，并生成工具别名和 skill map。</p>
+                  <pre><code>profile = compile_profile(raw_profile, sections=sections, kit_dir=PROFILE_KIT_DIR)
+profile["tool_aliases"] = _build_tool_aliases(profile)
+profile["skill_map"] = _build_skill_map(profile)</code></pre>
+                  <p class="summary-line">总结：它是 profile 进入内核的总入口。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>profile_compiler.py</summary>
+                <div>
+                  <p>按 <code>uses</code> 加载多个 kit，深度合并默认值和领域覆盖，并展开工具 archetype 与参数 fragment。</p>
+                  <pre><code>for kit_ref in _kit_refs(profile):
+    compiled = _deep_merge(compiled, _kit_payload(kit))
+compiled = _expand_tool_registry(compiled)</code></pre>
+                  <p class="summary-line">总结：它把“通用模板 + 领域差异”编成一份规则。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>profile_validator.py</summary>
+                <div>
+                  <p>校验 profile 是否缺少工具名、log adapter、evidence aggregator、response claim、安全策略和 case 引用。</p>
+                  <pre><code>_validate_tools(tools, errors)
+_validate_evidence_aggregator(normalizer_map.get("evidence_aggregator") or {}, warnings)
+_validate_cases(cases, tool_names, meta_tools, warnings)</code></pre>
+                  <p class="summary-line">总结：它在评分前先做配置体检，减少隐性错配。</p>
+                </div>
+              </details>
+            </div>
+            <p class="summary-line">总结：配置层保证 core 看到的是一份完整、可校验的规则表。</p>
+          </div>
+        </div>
+
+        <div class="category">
+          <h3>3. 真实捕获与日志适配</h3>
+          <div class="category-body">
+            <p>负责监听网页 Agent 的请求、SSE、XHR、fetch，并把不同日志结构适配成统一 run。</p>
+            <div class="file-list">
+              <details class="file-detail">
+                <summary>src/capture/clean_monitor.py</summary>
+                <div>
+                  <p>用 Playwright 打开独立 Chrome，捕获相关 URL 的请求、响应元数据、SSE 消息和分页结果摘要；不会记录认证头和 cookie。</p>
+                  <pre><code>context.expose_function("__agentEvalEmit", emit)
+context.add_init_script(_fetch_capture_script(...))
+events.write(event)</code></pre>
+                  <p class="summary-line">总结：它把真实网页交互保存为可复盘的 events.jsonl。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>log_adapter.py</summary>
+                <div>
+                  <p>根据 <code>normalizer_map.log_adapter</code> 读取 request、message、tool trace、final response 和 usage；适配层来自配置，不依赖具体网站硬编码。</p>
+                  <pre><code>if kind in set(adapter.get("message_event_kinds") or []):
+    current["messages"].append(_get_path(event, adapter.get("message_data_path") or ["data"]))</code></pre>
+                  <p class="summary-line">总结：它让“不同网站日志格式”可以通过 profile 适配。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>normalizer.py</summary>
+                <div>
+                  <p>把 raw events 分组成 run，并生成 observed：任务理解、显式计划、skill 链、工具链、工具结果、证据、最终回答和安全标志。</p>
+                  <pre><code>observed = {
+  "task_understanding": _infer_task_understanding(task, tool_items, config),
+  "explicit_plan": _extract_explicit_plan(tool_items),
+  "oracle_evidence": aggregate_evidence(evidence_summaries, config),
+}</code></pre>
+                  <p class="summary-line">总结：它把嘈杂日志翻译成评分器可读的标准结构。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>error_gate.py</summary>
+                <div>
+                  <p>在生成报告前识别数据源错误和不可评价 run。若只有 data error 且没有可评价输出，则中止报告；若刷新或重试后恢复，则保留恢复后的 run。</p>
+                  <pre><code>runs, trace, skipped_error_check = filter_evaluable_runs(runs, trace)
+if raw_error_check.has_error and not runs:
+    raise AgentDataError(raw_error_check)</code></pre>
+                  <p class="summary-line">总结：它避免系统数据异常被误评为 Agent 能力问题。</p>
+                </div>
+              </details>
+            </div>
+            <p class="summary-line">总结：捕获与标准化层把真实网页行为变成可评分数据。</p>
+          </div>
+        </div>
+
+        <div class="category">
+          <h3>4. 证据聚合、溯源与数据流</h3>
+          <div class="category-body">
+            <p>负责把工具结果变成证据池，并判断后续工具参数是否来自合理上游。</p>
+            <div class="file-list">
+              <details class="file-detail">
+                <summary>evidence_aggregator.py</summary>
+                <div>
+                  <p>聚合分页检索结果，输出全局统计、已观察页、覆盖率、分数统计、地点/分组统计和 sample summary；当前 grounding 按观察到的分页结果集合聚合。</p>
+                  <pre><code>all_items = [item for summary in sets for item in summary.get("items") or []]
+coverage_ratio = round(observed_count / total_count, 4)
+sample_items = _sample_items_for_report(all_items, rules)</code></pre>
+                  <p class="summary-line">总结：它把一页页结果压成可审计的 evidence set。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>provenance.py</summary>
+                <div>
+                  <p>给每次工具输出创建 result_key，并按 registry 规则把后续参数连接到上游结果，形成显式或推断的数据来源边。</p>
+                  <pre><code>result_index = _build_result_index(tool_results)
+_add_edge(call, edges, rule, source_key, source, "inferred_by_value", matched=True, value=value)</code></pre>
+                  <p class="summary-line">总结：它记录“参数从哪里来”。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>data_flow_validator.py</summary>
+                <div>
+                  <p>读取 tool_registry 中的数据流规则，优先检查 provenance 边；没有边时才回退到值匹配，判断流程是否合理。</p>
+                  <pre><code>source = _arg_source(call, rule.get("arg_name"))
+ok = source.get("matched") is True and source.get("source_tool") == rule.get("source_tool")</code></pre>
+                  <p class="summary-line">总结：它把来源档案变成数据流分数。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>tool_schema_validator.py</summary>
+                <div>
+                  <p>用 tool_registry 检查工具是否存在、参数是否必填、枚举值是否合法、成对参数是否齐全，以及禁止工具是否被调用。</p>
+                  <pre><code>for arg in required_args:
+    if arg not in args:
+        failures.append("missing_required_arg")</code></pre>
+                  <p class="summary-line">总结：它检查 Agent 有没有正确使用工具接口。</p>
+                </div>
+              </details>
+            </div>
+            <p class="summary-line">总结：证据链层回答“工具结果可信不可信、参数来源清不清楚”。</p>
+          </div>
+        </div>
+
+        <div class="category">
+          <h3>5. 匹配、评分与 LLM Assistant</h3>
+          <div class="category-body">
+            <p>负责把实际 run 对齐标准 case，并计算硬规则分数、安全分数和低权重语义辅助分。</p>
+            <div class="file-list">
+              <details class="file-detail">
+                <summary>matcher.py</summary>
+                <div>
+                  <p>根据 case 的 match 规则、用户原始问题、normalized understanding 和最终回答，选择最合适的 run。</p>
+                  <pre><code>final_text = ((observed.get("final_response") or {}).get("text") or "")
+haystack = f"{run.get('user_task')} {final_text}"</code></pre>
+                  <p class="summary-line">总结：它决定“这次真实任务该对照哪个标准答案”。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>scorer.py</summary>
+                <div>
+                  <p>计算 task_understanding、planning、skill、tool、arguments、data_flow、grounding、response_quality、safety 等维度，并按 profile 权重加权。</p>
+                  <pre><code>score = round(sum(dimensions[key] * weights[key] for key in dimensions))
+passed = score >= get_pass_threshold(profile) and (not failures or not _fail_on_any_failure(profile))</code></pre>
+                  <p class="summary-line">总结：它把实际表现压缩成可解释的总分和 pass/fail。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>llm_assistant.py</summary>
+                <div>
+                  <p>通过 OpenAI-compatible API 提供两个模块：judge 只参与 task_understanding 和 planning，summary 只生成扣分一句话，不改变硬规则结果。</p>
+                  <pre><code>JUDGED_DIMENSIONS = ["task_understanding", "planning"]
+"planning": "Score only observed_explicit_plan_raw against expected_plan."</code></pre>
+                  <p class="summary-line">总结：它增强语义容错，但不替代工具链和证据硬评估。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>safety_evaluator.py</summary>
+                <div>
+                  <p>执行 safety_policy 中的风险检测、回答标志、禁止项和关键失败映射，让通用安全协议与领域安全要求分离。</p>
+                  <pre><code>text = (((observed.get("final_response") or {}).get("text")) or "")
+policy = ((profile or {}).get("safety_policy") or {})</code></pre>
+                  <p class="summary-line">总结：它把安全边界从硬编码迁移到配置策略。</p>
+                </div>
+              </details>
+            </div>
+            <p class="summary-line">总结：评分层既对照标准答案，也保留 LLM 对语言理解的有限弹性。</p>
+          </div>
+        </div>
+
+        <div class="category">
+          <h3>6. 报告与可视化输出</h3>
+          <div class="category-body">
+            <p>负责把评估结果保存为 Markdown、JSONL 和前端可读的 report_data.js。</p>
+            <div class="file-list">
+              <details class="file-detail">
+                <summary>report.py</summary>
+                <div>
+                  <p>生成 Markdown 报告，只展示已观察到的 case；报告包含实验快照、LLM Assistant 状态、权重、维度分、扣分项、证据矩阵和最终回答。</p>
+                  <pre><code>observed_results = [result for result in results if _is_observed_result(result)]
+f"- Cases: {len(observed_results)}"</code></pre>
+                  <p class="summary-line">总结：它让报告聚焦真实跑过的任务。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>webshow_index.py</summary>
+                <div>
+                  <p>扫描 <code>reports/markdown</code>，过滤未跑 case，生成 <code>reports/webshow/report_data.js</code>，让网页下拉自动更新。</p>
+                  <pre><code>rows = _observed_rows(_read_jsonl(path))
+if not rows:
+    continue</code></pre>
+                  <p class="summary-line">总结：它让新报告自动进入评分可视化网页。</p>
+                </div>
+              </details>
+              <details class="file-detail">
+                <summary>reports/webshow/index.html</summary>
+                <div>
+                  <p>本地可视化报告页，读取 report_data.js 或用户上传的报告文件，突出显示总分、通过率、维度条和扣分明细。</p>
+                  <pre><code>const cases = (data.cases || []).filter(isObservedCase);
+const average = avg(cases.map(item => Number(item.score || 0)));</code></pre>
+                  <p class="summary-line">总结：它把评估产物转成更适合汇报的视觉面板。</p>
+                </div>
+              </details>
+            </div>
+            <p class="summary-line">总结：输出层把一次评估变成能复盘、能展示、能比较的结果。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Core 的执行箭头</h2>
+        <p>一次真实评估从命令行到网页展示的主干流程如下。</p>
+      </div>
+      <div class="content arrow-flow">
+        <div class="flow-node"><b>main.py</b><span>解析 target、mode、suite、LLM Assistant 参数。</span></div>
+        <div class="flow-node"><b>clean_monitor</b><span>real 模式打开 Chrome 并记录 events.jsonl。</span></div>
+        <div class="flow-node"><b>runner + normalizer</b><span>过滤数据错误，把日志转成标准 run。</span></div>
+        <div class="flow-node"><b>matcher + scorer</b><span>只评价已匹配 case，计算硬规则和 LLM 辅助分。</span></div>
+        <div class="flow-node"><b>report + webshow</b><span>写 Markdown / JSONL，并刷新可视化索引。</span></div>
+      </div>
+    </section>
+  </main>
+  <footer>Core Harness 负责稳定执行规则，领域差异由 Profile 与 Kit 提供。</footer>
+</body>
+</html>
