@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-META_TOOLS = {"update_plan", "request_user_input", "load_skill"}
+DEFAULT_META_TOOLS = {"update_plan", "request_user_input", "load_skill"}
 
 
 @dataclass
@@ -15,8 +15,16 @@ class ToolSchemaValidation:
     notes: list[str] = field(default_factory=list)
 
 
-def validate_tool_schema(run: dict[str, Any], tool_registry: dict[str, Any] | None, case: dict[str, Any] | None = None) -> ToolSchemaValidation:
-    registry = _registry_by_name(tool_registry or {})
+def validate_tool_schema(
+    run: dict[str, Any],
+    tool_registry: dict[str, Any] | None,
+    case: dict[str, Any] | None = None,
+    meta_tools: set[str] | None = None,
+) -> ToolSchemaValidation:
+    tool_registry = tool_registry or {}
+    registry = _registry_by_name(tool_registry)
+    authorization_context = tool_registry.get("authorization_context") or {}
+    ignored_tools = meta_tools or DEFAULT_META_TOOLS
     if not registry:
         return ToolSchemaValidation(score=100)
 
@@ -25,7 +33,7 @@ def validate_tool_schema(run: dict[str, Any], tool_registry: dict[str, Any] | No
     notes: list[str] = []
     for item in ((run.get("observed") or {}).get("tool_chain") or []):
         tool_name = item.get("tool_name")
-        if not tool_name or tool_name in META_TOOLS:
+        if not tool_name or tool_name in ignored_tools:
             continue
         tool_def = registry.get(tool_name)
         if not tool_def:
@@ -34,7 +42,7 @@ def validate_tool_schema(run: dict[str, Any], tool_registry: dict[str, Any] | No
             notes.append(f"[TOOL SCHEMA] 未在 tool_registry 中找到工具定义：{tool_name}")
             continue
         args = item.get("args") or {}
-        _validate_tool_call(tool_name, args, tool_def, case or {}, checks, failures, notes)
+        _validate_tool_call(tool_name, args, tool_def, case or {}, authorization_context, checks, failures, notes)
 
     if not checks:
         return ToolSchemaValidation(score=100, failure_types=sorted(set(failures)), notes=notes)
@@ -47,6 +55,7 @@ def _validate_tool_call(
     args: dict[str, Any],
     tool_def: dict[str, Any],
     case: dict[str, Any],
+    authorization_context: dict[str, Any],
     checks: list[bool],
     failures: list[str],
     notes: list[str],
@@ -100,8 +109,8 @@ def _validate_tool_call(
             _record(_matches_format(str(args.get(arg)), fmt), "invalid_arg_format", f"{tool_name}: {arg}={args.get(arg)!r} 不符合格式 {fmt}", checks, failures, notes)
 
     if rules.get("requires_authorization_context"):
-        ok = _case_has_authorization_context(case)
-        _record(ok, "missing_authorization_context", f"{tool_name}: 高风险工具需要 case 中存在授权/审批/用途/范围上下文", checks, failures, notes)
+        ok = _case_has_authorization_context(case, rules, authorization_context)
+        _record(ok, "missing_authorization_context", f"{tool_name}: tool requires an authorization context declared by the case/profile", checks, failures, notes)
 
 
 def _registry_by_name(tool_registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -128,10 +137,12 @@ def _matches_format(value: str, fmt: str) -> bool:
     return True
 
 
-def _case_has_authorization_context(case: dict[str, Any]) -> bool:
+def _case_has_authorization_context(case: dict[str, Any], rules: dict[str, Any], authorization_context: dict[str, Any]) -> bool:
     expected = case.get("expected") or {}
     understanding = expected.get("understanding") or {}
-    if understanding.get("authorization_context_present"):
+    context_field = authorization_context.get("case_expected_field") or rules.get("authorization_context_field") or "authorization_context_present"
+    if understanding.get(context_field):
         return True
     text = " ".join(str(value) for value in [case.get("user_task"), case.get("task_type"), case.get("level")])
-    return any(token in text for token in ["授权", "审批", "合规", "authorized", "authorization"])
+    markers = list(rules.get("authorization_context_markers") or authorization_context.get("markers") or [])
+    return bool(markers) and any(str(token) in text for token in markers)

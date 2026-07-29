@@ -1,0 +1,28 @@
+{
+  "kit_id": "task_understanding_template",
+  "schema_version": "profile-kit-v1",
+  "version": "0.1.0",
+  "description": "Reusable task-understanding defaults for tool-using Agents. Domain profiles provide domain-specific target types, feature vocabularies, and intent labels.",
+  "normalizer_map": {
+    "task_understanding": {
+      "image_args": ["image_url", "image_base64"],
+      "image_markers": ["<img_url>", "图片", "图像", "image"],
+      "point_markers": ["点位", "摄像头", "附近", "周边", "location", "camera"],
+      "text_search_markers": ["查找", "查询", "检索", "搜索", "search", "find"],
+      "intent_labels": {
+        "image_and_point": "image_and_point",
+        "image": "image",
+        "point_feature": "point_feature",
+        "text_feature": "text_feature",
+        "unknown": "unknown"
+      },
+      "time_range_markers": [
+        {"days": 1, "keywords": ["昨天", "最近一天", "1天", "最近1天", "last day"]},
+        {"days": 2, "keywords": ["最近两天", "两天内", "2天", "最近2天", "last two days"]},
+        {"days": 3, "keywords": ["最近三天", "三天内", "3天", "最近3天", "last three days"]},
+        {"days": 7, "keywords": ["最近七天", "七天内", "7天", "最近7天", "last week"]}
+      ],
+      "date_arg_names": ["start_date", "end_date"]
+    }
+  }
+}

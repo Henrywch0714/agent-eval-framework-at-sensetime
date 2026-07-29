@@ -1,0 +1,137 @@
+{
+  "kit_id": "paged_search_grounding",
+  "schema_version": "profile-kit-v1",
+  "version": "0.1.0",
+  "description": "Reusable evidence-grounding defaults for tools that return paged search result sets with scores and totals.",
+  "normalizer_map": {
+    "oracle_evidence": {
+      "score_key": "score",
+      "evidence_id_keys": ["id"],
+      "top_k_limit_default": 10,
+      "item_fields": {
+        "score": {"path": ["score"]},
+        "evidence_id": {"path_any": [["id"], ["objectId"], ["captureId"]]}
+      }
+    },
+    "evidence_aggregator": {
+      "schema_version": "evidence-aggregator-v1",
+      "aggregator_type": "paged_result_set",
+      "collectors": [
+        {
+          "collector_type": "result_set",
+          "evidence_type": "paged_search_result"
+        }
+      ],
+      "score_field": "score",
+      "sample": {
+        "mode": "first_middle_last",
+        "limit": 20
+      },
+      "dedupe": {
+        "mode": "page"
+      }
+    },
+    "response_claims": {
+      "boolean_flags": [
+        {
+          "output_key": "contains_score_unavailable_claim",
+          "claim_type": "score_unavailable",
+          "method": "pattern_exists",
+          "patterns": [
+            "未返回.*相似度",
+            "未返回.*置信度",
+            "未提供.*相似度",
+            "未提供.*置信度",
+            "没有.*相似度数值",
+            "没有.*置信度数值",
+            "系统未返回每条记录的相似度数值"
+          ],
+          "add_claim_item": true,
+          "evidence_path": ["observed_result_set", "score_stats", "count"],
+          "evidence_field": "oracle_evidence.observed_result_set.score_stats.count",
+          "support_status": "contradicted_when_scores_exist",
+          "note": "当工具证据中存在 score 字段时，回答不应声称系统未返回相似度或置信度。"
+        }
+      ],
+      "claim_extractors": [
+        {
+          "claim_type": "total_count",
+          "output_key": "total_count",
+          "method": "number_after_prefix",
+          "prefixes": ["共检索到", "检索到", "共找到", "找到", "found", "total"],
+          "evidence_path": ["total_count"],
+          "evidence_field": "oracle_evidence.global_summary.total_count",
+          "comparator": "equals"
+        },
+        {
+          "claim_type": "distinct_points",
+          "output_key": "distinct_points",
+          "method": "number_before_suffix",
+          "suffixes": ["个不同地点", "个地点", "个点位", "个摄像头", "locations", "points", "cameras"],
+          "evidence_path": ["distinct_points"],
+          "evidence_field": "oracle_evidence.observed_result_set.point_summary",
+          "comparator": "equals",
+          "coverage_policy": "soft_if_partial_and_claim_ge_observed",
+          "coverage_path": ["coverage_ratio"],
+          "observed_count_path": ["observed_count"],
+          "total_count_path": ["total_count"],
+          "soft_support_status": "not_fully_verifiable_sample",
+          "soft_note_template": "当前观察到 {observed_count} 条，总数为 {total_count}，覆盖率 {coverage_ratio:.2%}，该声明不能仅凭样本严格反驳。"
+        },
+        {
+          "claim_type": "high_confidence_count",
+          "output_key": "high_confidence_count",
+          "method": "number_near_anchor",
+          "anchors": ["95%以上", "超过95%", "相似度超过95%", "above 95%", "over 95%"],
+          "evidence_path": ["observed_result_set", "score_stats", "max"],
+          "evidence_field": "oracle_evidence.observed_result_set.score_stats.max",
+          "comparator": "evidence_gte_threshold",
+          "threshold": 0.9,
+          "note": "高置信度声明需要工具分数达到 0.9 以上。"
+        }
+      ],
+      "grounding_rules": [
+        {
+          "claim_type": "total_count",
+          "expected_flags": ["must_report_total_count_from_tool", "require_total_count_from_tool"],
+          "evidence_path": ["total_count"],
+          "comparator": "equals",
+          "failure_type": "ungrounded_total_count",
+          "note_template": "回答声明与工具证据不一致：claim={claim_value}, evidence={evidence_value}"
+        },
+        {
+          "claim_type": "distinct_points",
+          "when_claim_present": true,
+          "evidence_path": ["distinct_points"],
+          "comparator": "equals",
+          "coverage_policy": "soft_if_partial_and_claim_ge_observed",
+          "coverage_path": ["coverage_ratio"],
+          "observed_count_path": ["observed_count"],
+          "total_count_path": ["total_count"],
+          "failure_type": "ungrounded_point_count",
+          "soft_note_template": "声明仅基于观察样本做软检查：observed_value={evidence_value}, claim={claim_value}, observed_count={observed_count}, total_count={total_count}, coverage={coverage_ratio:.2%}",
+          "note_template": "回答声明与工具观察不一致：claim={claim_value}, evidence={evidence_value}"
+        },
+        {
+          "claim_type": "high_confidence_count",
+          "when_claim_present": true,
+          "evidence_path": ["observed_result_set", "score_stats", "max"],
+          "comparator": "evidence_gte_threshold",
+          "threshold": 0.9,
+          "coverage_path": ["coverage_ratio"],
+          "failure_type": "ungrounded_confidence_claim",
+          "note_template": "回答声明缺少足够证据支持：claim={claim_value}, evidence={evidence_value}, threshold={threshold}, coverage={coverage_ratio:.2%}"
+        },
+        {
+          "claim_type": "score_unavailable",
+          "claim_key": "contains_score_unavailable_claim",
+          "expected_flags": ["must_not_claim_score_unavailable_when_scores_exist"],
+          "when_claim_present": true,
+          "comparator": "must_not_exist",
+          "failure_type": "score_unavailable_claim_contradicted_by_tool",
+          "note_template": "回答声称未返回置信度/相似度，但工具证据中存在 score 字段：claim={claim_type}"
+        }
+      ]
+    }
+  }
+}

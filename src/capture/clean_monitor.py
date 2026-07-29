@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -84,26 +83,8 @@ def capture_real_agent(
                 "content_type": content_type,
             }
         )
-        if "application/json" not in content_type:
-            return
-        try:
-            payload = response.json()
-        except Exception:
-            return
-        if _matches_any_url_part(req_url, capture_config.get("skill_inventory_url_parts") or []):
-            emit({"kind": "skill_inventory", "url": req_url, "skills": _summarize_skills(payload)})
-        if _matches_any_url_part(req_url, capture_config.get("oracle_summary_url_parts") or []):
-            summary = _summarize_result_payload(payload, image_detail_limit=image_detail_limit, normalizer_config=normalizer_config)
-            if summary:
-                emit(
-                    {
-                        "kind": "multimodal_summary",
-                        "url": req_url,
-                        "method": request.method,
-                        "status": response.status,
-                        "summary": summary,
-                    }
-                )
+        # JSON bodies are captured in-page through fetch/XMLHttpRequest patches.
+        # Reading them here is racy when the browser is closed after a long run.
 
     with sync_playwright() as p:
         executable = _chrome_path()
@@ -117,7 +98,13 @@ def capture_real_agent(
         context.on("request", on_request)
         context.on("response", on_response)
         context.expose_function("__agentEvalEmit", emit)
-        context.add_init_script(_fetch_capture_script(image_detail_limit=image_detail_limit))
+        context.add_init_script(
+            _fetch_capture_script(
+                image_detail_limit=image_detail_limit,
+                oracle_url_parts=capture_config.get("oracle_summary_url_parts") or [],
+                oracle_config=(normalizer_config.get("oracle_evidence") or {}),
+            )
+        )
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(url, wait_until="domcontentloaded")
         print("[LOGIN] If needed, log in manually in the opened Chrome window.")
@@ -178,43 +165,6 @@ def _summarize_skills(payload: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _summarize_result_payload(payload: Any, image_detail_limit: int, normalizer_config: dict[str, Any]) -> dict[str, Any] | None:
-    if not isinstance(payload, dict):
-        return None
-    rules = normalizer_config.get("oracle_evidence") or {}
-    data = payload.get("data")
-    results = _get_path(payload, rules.get("result_list_path") or [])
-    if not isinstance(data, dict) or not isinstance(results, list):
-        return None
-    score_key = rules.get("score_key") or "score"
-    scores = [float(item[score_key]) for item in results if isinstance(item, dict) and isinstance(item.get(score_key), (int, float))]
-    points = Counter()
-    top_k = []
-    for idx, item in enumerate(results[:image_detail_limit], 1):
-        if not isinstance(item, dict):
-            continue
-        point = _first_path(item, rules.get("point_ref_paths") or []) or "unknown"
-        points[str(point)] += 1
-        top_k.append(
-            {
-                "rank": idx,
-                "evidence_id": _first_key(item, rules.get("evidence_id_keys") or []) or f"ev-{idx:03d}",
-                "score": item.get(score_key),
-                "capture_type": item.get(rules.get("capture_type_key") or "type"),
-                "point_ref": point,
-            }
-        )
-    return {
-        "query_type": _get_path(payload, rules.get("query_type_path") or []),
-        "page": _get_path(payload, rules.get("page_path") or []) or {},
-        "result_count_observed": len(results),
-        "score_stats": _score_stats(scores),
-        "distinct_points": len(points) if points else None,
-        "point_summary": [{"point_ref": key, "count": val} for key, val in points.most_common(5)],
-        "top_k_refs": top_k,
-    }
-
-
 def _get_path(value: Any, path: list[Any]) -> Any:
     current = value
     for key in path:
@@ -248,11 +198,15 @@ def _score_stats(scores: list[float]) -> dict[str, Any]:
     return {"count": len(scores), "min": min(scores), "avg": sum(scores) / len(scores), "max": max(scores)}
 
 
-def _fetch_capture_script(image_detail_limit: int) -> str:
+def _fetch_capture_script(image_detail_limit: int, oracle_url_parts: list[str] | None = None, oracle_config: dict[str, Any] | None = None) -> str:
+    oracle_parts_json = json.dumps(oracle_url_parts or [], ensure_ascii=False)
+    oracle_config_json = json.dumps(oracle_config or {}, ensure_ascii=False)
     return f"""
 (() => {{
   if (window.__agentEvalFetchPatched) return;
   window.__agentEvalFetchPatched = true;
+  const oracleUrlParts = {oracle_parts_json};
+  const oracleConfig = {oracle_config_json};
 
   const emit = (event) => {{
     try {{
@@ -283,6 +237,109 @@ def _fetch_capture_script(image_detail_limit: int) -> str:
     let data = raw;
     try {{ data = JSON.parse(raw); }} catch (e) {{}}
     emit({{kind: "sse_message", url, event: eventName, data, raw_size_chars: raw.length}});
+  }};
+
+  const isOracleUrl = (url) => oracleUrlParts.some((part) => String(url || "").includes(part));
+  const getPath = (value, path) => {{
+    let current = value;
+    for (const key of path) {{
+      if (!current || typeof current !== "object") return undefined;
+      current = current[key];
+    }}
+    return current;
+  }};
+  const compactPage = (page) => {{
+    const out = {{}};
+    for (const key of ["page", "pageSize", "total", "totalPage", "hasNext", "offset", "startIndex", "endIndex"]) {{
+      if (page && Object.prototype.hasOwnProperty.call(page, key)) out[key] = page[key];
+    }}
+    return out;
+  }};
+  const firstConfiguredPath = (item, spec) => {{
+    if (!spec || typeof spec !== "object") return null;
+    if (Array.isArray(spec.path)) {{
+      const value = getPath(item, spec.path);
+      if (value !== undefined && value !== null && value !== "") return value;
+    }}
+    if (Array.isArray(spec.path_any)) {{
+      for (const path of spec.path_any) {{
+        const value = getPath(item, path);
+        if (value !== undefined && value !== null && value !== "") return value;
+      }}
+    }}
+    if (Object.prototype.hasOwnProperty.call(spec, "default")) return spec.default;
+    return null;
+  }};
+  const itemFields = (item) => {{
+    const specs = oracleConfig.item_fields || {{}};
+    const out = {{}};
+    for (const [fieldName, spec] of Object.entries(specs)) {{
+      const value = firstConfiguredPath(item, spec);
+      out[fieldName] = spec && spec.as_bool ? Boolean(value) : value;
+    }}
+    return out;
+  }};
+  const resultSetSummary = (container, path) => {{
+    const result = container.result;
+    const page = container.page || {{}};
+    const pageNo = Number(page.page || 1);
+    const pageSize = Number(page.pageSize || (Array.isArray(result) ? result.length : 0));
+    const startIndex = Number.isFinite(Number(page.startIndex)) ? Number(page.startIndex) : (pageNo - 1) * pageSize;
+    const grounding = [];
+    if (Array.isArray(result)) {{
+      result.forEach((item, index) => {{
+        if (!item || typeof item !== "object") return;
+        grounding.push({{
+          local_index: index + 1,
+          global_index_estimate: startIndex + index + 1,
+          page: pageNo,
+          page_size: pageSize || null,
+          total_count: Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+          total_page: Number.isFinite(Number(page.totalPage)) ? Number(page.totalPage) : null,
+          scope: "observed_result_item",
+          ...itemFields(item)
+        }});
+      }});
+    }}
+    return {{
+      path,
+      query_type: container.queryType,
+      result_len: Array.isArray(result) ? result.length : 0,
+      page: compactPage(page),
+      pagination_observed: Number(page.total || 0) > (Array.isArray(result) ? result.length : 0),
+      grounding_items: grounding,
+      point_summary_field: oracleConfig.point_summary_field || null,
+      time_stats_field: oracleConfig.time_stats_field || null
+    }};
+  }};
+  const walkResultSets = (value, out, path) => {{
+    if (value && typeof value === "object" && !Array.isArray(value)) {{
+      if (Array.isArray(value.result) && value.page && typeof value.page === "object") {{
+        out.push(resultSetSummary(value, path));
+      }}
+      for (const [key, child] of Object.entries(value)) walkResultSets(child, out, `${{path}}.${{key}}`);
+    }} else if (Array.isArray(value)) {{
+      value.slice(0, 50).forEach((child, index) => walkResultSets(child, out, `${{path}}[${{index}}]`));
+    }}
+  }};
+  const summarizePayload = (payload) => {{
+    const resultSets = [];
+    walkResultSets(payload, resultSets, "$");
+    return {{result_sets: resultSets.slice(0, 20), result_set_count: resultSets.length}};
+  }};
+  const emitJsonSummary = (kind, url, method, status, contentType, raw) => {{
+    if (!isOracleUrl(url) || !String(contentType || "").includes("application/json") || !raw) return;
+    let payload = null;
+    try {{ payload = JSON.parse(raw); }} catch (e) {{}}
+    if (!payload) return;
+    emit({{
+      kind,
+      url,
+      method,
+      status,
+      content_type: contentType,
+      diagnostic: summarizePayload(payload)
+    }});
   }};
 
   const originalFetch = window.fetch.bind(window);
@@ -327,8 +384,35 @@ def _fetch_capture_script(image_detail_limit: int) -> str:
         headers: response.headers
       }});
     }}
+    if (contentType.includes("application/json") && isOracleUrl(response.url || reqUrl)) {{
+      try {{
+        const clone = response.clone();
+        clone.text().then((raw) => emitJsonSummary("fetch_json_response", response.url || reqUrl, method, response.status, contentType, raw)).catch(() => {{}});
+      }} catch (e) {{}}
+    }}
 
     return response;
+  }};
+
+  const originalXhrOpen = XMLHttpRequest.prototype.open;
+  const originalXhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+    this.__agentEvalMethod = method || "GET";
+    this.__agentEvalUrl = url || "";
+    return originalXhrOpen.call(this, method, url, ...rest);
+  }};
+  XMLHttpRequest.prototype.send = function(body) {{
+    const xhr = this;
+    const method = xhr.__agentEvalMethod || "GET";
+    const reqUrl = xhr.__agentEvalUrl || "";
+    xhr.addEventListener("load", function() {{
+      try {{
+        const contentType = xhr.getResponseHeader("content-type") || "";
+        const url = xhr.responseURL || reqUrl;
+        emitJsonSummary("xhr_json_response", url, method, xhr.status, contentType, xhr.responseText || "");
+      }} catch (e) {{}}
+    }});
+    return originalXhrSend.call(this, body);
   }};
 }})();
 """

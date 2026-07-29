@@ -1,0 +1,290 @@
+{
+  "kit_id": "multimodal_search_agent",
+  "schema_version": "profile-kit-v1",
+  "version": "0.1.0",
+  "description": "Reusable multimodal-search defaults for Agents that combine image analysis, camera/location discovery, paged capture search, and previous-result navigation.",
+  "normalizer_map": {
+    "argument_compaction": {
+      "keep_args": [
+        "search_type",
+        "appearance_visual_info",
+        "start_date",
+        "end_date",
+        "start_time",
+        "end_time",
+        "image_url",
+        "image_base64",
+        "start_abscissa",
+        "start_ordinate",
+        "end_abscissa",
+        "end_ordinate",
+        "face_left_x",
+        "face_top_y",
+        "face_right_x",
+        "face_bottom_y",
+        "fuzzy_keyword",
+        "search_name",
+        "label_name",
+        "group_name",
+        "address",
+        "address_radius",
+        "latitude",
+        "longitude",
+        "geo_radius",
+        "camera_serial",
+        "camera_serials",
+        "object_prompt",
+        "tool_result_key",
+        "source_result_key",
+        "bbox_source",
+        "bbox_result_key",
+        "image_url_source",
+        "image_result_key",
+        "camera_serials_source",
+        "camera_result_key",
+        "threshold"
+      ]
+    },
+    "tool_arg_summary": {
+      "fields": {
+        "search_type": "search_type",
+        "appearance_visual_info": "appearance_visual_info",
+        "camera_or_point_query": "fuzzy_keyword"
+      },
+      "date_args": ["start_date", "end_date"],
+      "presence": {
+        "bbox_present": ["start_abscissa", "start_ordinate", "end_abscissa", "end_ordinate"],
+        "has_image_ref": ["image_url", "image_base64"]
+      }
+    },
+    "category_skill_map": {
+      "image_preprocessing": "image-analysis",
+      "capture_search": "capture-search",
+      "camera_discovery": "camera-discovery",
+      "ui_camera_stream": "camera-ui",
+      "result_navigation": "result-navigation"
+    },
+    "tool_result_summaries": [
+      {
+        "tool": "image_analysis",
+        "kind": "detected_targets",
+        "result_path": ["result"],
+        "target_collections": {
+          "faces": "FACE",
+          "pedestrians": "PEDESTRIAN",
+          "vehicles": "VEHICLE",
+          "human_powered_vehicles": "HUMAN_POWERED_VEHICLE",
+          "cyclists": "HUMAN_POWERED_VEHICLE"
+        },
+        "position_key": "position",
+        "position_schema": "start_end_xy",
+        "box_output_keys": ["start_abscissa", "start_ordinate", "end_abscissa", "end_ordinate"],
+        "output_collection": "detected_targets",
+        "target_type_key": "target_type",
+        "value_key": "bbox",
+        "presence_outputs": {
+          "image_url_present": ["result", "url"]
+        }
+      },
+      {
+        "tool_categories": ["camera_discovery"],
+        "kind": "list_refs",
+        "list_path": ["data", "result"],
+        "item_value_key": "serial",
+        "output_list_key": "camera_serials",
+        "output_refs_key": "camera_refs",
+        "ref_value_key": "camera_serial",
+        "count_path": ["data", "page", "total"],
+        "count_output_keys": ["camera_serial_count", "camera_count"],
+        "limit": 20
+      },
+      {
+        "tool_categories": ["capture_search"],
+        "kind": "query_param",
+        "data_path": ["data"],
+        "query_path": ["data", "queryParam"],
+        "query_type_path": ["data", "queryType"],
+        "list_path": ["data", "queryParam", "cameraSerials"],
+        "output_list_key": "camera_serials",
+        "count_output_key": "camera_serial_count",
+        "image_ref_path": ["data", "queryParam", "imageUrl"],
+        "image_ref_output_key": "image_url_present",
+        "position_path": ["data", "queryParam", "position"],
+        "position_output_key": "position",
+        "box_output_keys": ["start_abscissa", "start_ordinate", "end_abscissa", "end_ordinate"],
+        "limit": 20
+      },
+      {
+        "tool_categories": ["result_navigation"],
+        "kind": "recursive_presence",
+        "presence_outputs": {
+          "image_url_present": ["image_url", "imageUrl"],
+          "bbox_present": ["position"]
+        }
+      }
+    ]
+  },
+  "tool_registry": {
+    "arg_schema_fragments": {
+      "image_input": {
+        "image_url": {"type": "string", "required": false},
+        "image_base64": {"type": "string", "required": false}
+      },
+      "bbox_start_end_xy": {
+        "start_abscissa": {"type": "integer", "required": false},
+        "start_ordinate": {"type": "integer", "required": false},
+        "end_abscissa": {"type": "integer", "required": false},
+        "end_ordinate": {"type": "integer", "required": false}
+      },
+      "face_bbox_xy": {
+        "face_left_x": {"type": "integer", "required": false},
+        "face_top_y": {"type": "integer", "required": false},
+        "face_right_x": {"type": "integer", "required": false},
+        "face_bottom_y": {"type": "integer", "required": false}
+      },
+      "time_range": {
+        "start_date": {"type": "string", "required": false, "format": "yyyyMMdd"},
+        "end_date": {"type": "string", "required": false, "format": "yyyyMMdd"},
+        "start_time": {"type": "string", "required": false, "format": "HH:mm:ss"},
+        "end_time": {"type": "string", "required": false, "format": "HH:mm:ss"}
+      },
+      "camera_scope": {
+        "camera_serials": {"type": "array[string]", "required": false}
+      },
+      "confidence_threshold": {
+        "threshold": {"type": "number", "required": false}
+      },
+      "appearance_query": {
+        "appearance_visual_info": {"type": "string", "required": false}
+      },
+      "camera_discovery": {
+        "search_name": {"type": "string", "required": false},
+        "label_name": {"type": "string", "required": false},
+        "group_name": {"type": "string", "required": false},
+        "address": {"type": "string", "required": false},
+        "address_radius": {"type": "number", "required": false},
+        "latitude": {"type": "number", "required": false},
+        "longitude": {"type": "number", "required": false},
+        "geo_radius": {"type": "number", "required": false},
+        "fuzzy_keyword": {"type": "string", "required": false}
+      }
+    },
+    "tool_archetypes": {
+      "camera_discovery_tool": {
+        "category": "camera_discovery",
+        "risk_level": "low",
+        "arg_fragments": ["camera_discovery"],
+        "argument_rules": {
+          "requires_together": [["address", "address_radius"], ["latitude", "longitude"]],
+          "allowed_special_values": {"fuzzy_keyword": ["ALL"]},
+          "mutually_exclusive_with": {
+            "fuzzy_keyword": ["search_name", "label_name", "group_name", "address", "latitude", "longitude"]
+          }
+        }
+      },
+      "capture_search_tool": {
+        "category": "capture_search",
+        "risk_level": "medium",
+        "arg_fragments": ["image_input", "bbox_start_end_xy", "appearance_query", "time_range", "camera_scope", "confidence_threshold"],
+        "argument_rules": {
+          "required_one_of": [["image_url", "appearance_visual_info"]],
+          "mutually_exclusive_groups": [["image_url", "appearance_visual_info"]],
+          "required_when": [
+            {
+              "when_arg_present": "image_url",
+              "required": ["start_abscissa", "start_ordinate", "end_abscissa", "end_ordinate"]
+            }
+          ]
+        }
+      },
+      "object_capture_search_tool": {
+        "category": "capture_search",
+        "risk_level": "medium",
+        "arg_fragments": ["image_input", "time_range", "camera_scope", "confidence_threshold"],
+        "args": {
+          "object_prompt": {"type": "string", "required": false}
+        },
+        "argument_rules": {
+          "required_one_of": [["image_url", "object_prompt"]],
+          "mutually_exclusive_groups": [["image_url", "object_prompt"]]
+        }
+      },
+      "image_analysis_tool": {
+        "category": "image_preprocessing",
+        "risk_level": "low",
+        "arg_fragments": ["image_input"],
+        "argument_rules": {
+          "required_one_of": [["image_url", "image_base64"]]
+        }
+      },
+      "previous_result_navigation_tool": {
+        "category": "result_navigation",
+        "risk_level": "low",
+        "args": {
+          "tool_result_key": {"type": "string", "required": true}
+        },
+        "argument_rules": {
+          "required": ["tool_result_key"]
+        }
+      },
+      "authorized_sensitive_lookup_tool": {
+        "risk_level": "high",
+        "arg_fragments": ["time_range", "camera_scope"],
+        "argument_rules": {
+          "requires_authorization_context": true
+        }
+      }
+    },
+    "data_flow_rules": {
+      "arg_sources": [
+        {
+          "name": "image_analysis_bbox_to_capture_bbox",
+          "arg_name": "bbox",
+          "target_tool_categories": ["capture_search"],
+          "target_arg_keys": ["start_abscissa", "start_ordinate", "end_abscissa", "end_ordinate"],
+          "target_required_when_arg_present": "image_url",
+          "target_type_arg": "search_type",
+          "source_tool": "image_analysis",
+          "source_output_collection": "detected_targets",
+          "source_output_type": "detected_target",
+          "source_value_key": "bbox",
+          "source_type_key": "target_type",
+          "explicit_source_keys": ["bbox_source", "bbox_result_key", "source_result_key", "tool_result_key"],
+          "allowed_source_types_by_target_arg": {
+            "FACE": ["FACE"],
+            "PEDESTRIAN": ["PEDESTRIAN"],
+            "PERSON": ["PEDESTRIAN"],
+            "*": ["FACE", "PEDESTRIAN", "VEHICLE", "HUMAN_POWERED_VEHICLE"]
+          },
+          "failure_type": "bbox_not_from_image_analysis"
+        },
+        {
+          "name": "query_cameras_to_capture_camera_serials",
+          "arg_name": "camera_serials",
+          "target_tool_categories": ["capture_search"],
+          "target_arg_keys": ["camera_serials"],
+          "source_tool": "query_cameras",
+          "source_output_collection": "camera_refs",
+          "source_output_type": "camera_ref",
+          "source_value_key": "camera_serial",
+          "source_result_list_key": "camera_serials",
+          "explicit_source_keys": ["camera_serials_source", "camera_result_key", "source_result_key", "tool_result_key"],
+          "case_required_flags": ["camera_serials_should_come_from", "camera_serials_preferred"],
+          "failure_type": "camera_serials_not_from_query"
+        },
+        {
+          "name": "previous_tool_result_image_to_capture_image_url",
+          "arg_name": "image_url",
+          "target_tool_categories": ["capture_search"],
+          "target_arg_keys": ["image_url"],
+          "source_tool": "get_tool_result",
+          "source_output_type": "tool_result",
+          "source_presence_key": "image_url_present",
+          "explicit_source_keys": ["image_url_source", "image_result_key", "source_result_key", "tool_result_key"],
+          "required_when_source_in_expected_order": true,
+          "failure_type": "previous_result_image_not_used"
+        }
+      ]
+    }
+  }
+}

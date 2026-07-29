@@ -12,6 +12,7 @@ venv/
 logs/
 reports/*
 !reports/.gitkeep
+test_monitor/
 
 # Local/private domain profiles
 domain_profiles/

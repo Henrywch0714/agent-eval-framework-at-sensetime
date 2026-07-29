@@ -1,0 +1,43 @@
+{
+  "kit_id": "web_sse_agent",
+  "schema_version": "profile-kit-v1",
+  "version": "0.1.0",
+  "description": "Reusable defaults for website Agents that stream tool calls and responses through SSE-like runtime events.",
+  "normalizer_map": {
+    "event_grouping": {
+      "run_request_url_parts": ["/api/v1/run_sse"],
+      "retry_request_url_parts": ["/api/v1/retry"]
+    },
+    "log_adapter": {
+      "event_kind_field": "kind",
+      "request_event_kind": "network_request",
+      "request_body_field": "post_data_preview",
+      "run_request_url_parts_path": ["event_grouping", "run_request_url_parts"],
+      "retry_request_url_parts_path": ["event_grouping", "retry_request_url_parts"],
+      "message_event_kinds": ["sse_message"],
+      "message_data_path": ["data"],
+      "evidence_summary_event_kinds": ["multimodal_summary"],
+      "evidence_summary_path": ["summary"],
+      "json_response_event_kinds": ["xhr_json_response", "fetch_json_response"],
+      "close_event_kinds": ["sse_close"],
+      "request_text": {
+        "parts_path": ["newMessage", "parts"],
+        "text_key": "text",
+        "function_response_key": "functionResponse",
+        "function_response_name_key": "name",
+        "function_response_payload_key": "response",
+        "function_response_prefix": "functionResponse:{tool_name}"
+      },
+      "final_response": {
+        "streaming_fallback": true,
+        "stream_value": true,
+        "strip_blocks": ["think"]
+      },
+      "usage": {"path": ["usageMetadata"]}
+    },
+    "meta_tools": ["update_plan", "request_user_input", "load_skill", "run_skill_script"]
+  },
+  "capture": {
+    "sse_url_parts": ["/api/v1/run_sse"]
+  }
+}

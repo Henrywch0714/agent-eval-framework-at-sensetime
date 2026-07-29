@@ -1,0 +1,24 @@
+.git/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Python environments
+wch/
+.venv/
+venv/
+
+# Local/private runtime data. Runtime scripts bind-mount the project when needed.
+logs/
+reports/markdown/
+reports/webshow/report_data.js
+domain_profiles/
+
+# Local secrets
+.env
+.env.*
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo

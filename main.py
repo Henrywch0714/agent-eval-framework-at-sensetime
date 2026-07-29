@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 from src.capture.clean_monitor import capture_real_agent
+from src.core.error_gate import AgentDataError
+from src.core.llm_assistant import build_llm_assistant_config
 from src.core.profile import load_profile
 from src.core.runner import run_evaluation
+from src.core.webshow_index import build_webshow_index
 
 
 ROOT = Path(__file__).resolve().parent
@@ -19,12 +23,18 @@ def main() -> None:
     parser.add_argument("--mode", choices=["mock", "events", "real"], default="mock", help="mock=sample log, events=existing jsonl, real=open browser and capture")
     parser.add_argument("--suite", default="regression", help="l1, l2, safety, regression")
     parser.add_argument("--events", default="")
-    parser.add_argument("--out-dir", default=str(ROOT / "reports"))
+    parser.add_argument("--out-dir", default=str(ROOT / "reports" / "markdown"))
     parser.add_argument("--log-dir", default=str(ROOT / "logs"))
-    parser.add_argument("--name", default="", help="Evaluation run name. Files are written as <name>_001_*.jsonl/md.")
+    parser.add_argument("--name", default="", help="Deprecated display hint. Report names now use <sequence>_<yy_mm_dd_hh>.")
     parser.add_argument("--suffix", default="", help="Deprecated alias for --name.")
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--image-detail-limit", type=int, default=10)
+    parser.add_argument("--capture-only", action="store_true", help="In real mode, stop after writing events jsonl and skip evaluation/report generation.")
+    parser.add_argument("--llm-assistant", action="store_true", help="Enable optional LLM assistant modules: judge and summary.")
+    parser.add_argument("--llm-assistant-model", default="", help="LLM assistant model name. Can also use SITE_AGENT_EVAL_LLM_MODEL.")
+    parser.add_argument("--llm-assistant-base-url", default="", help="OpenAI-compatible base URL. Can also use SITE_AGENT_EVAL_LLM_BASE_URL.")
+    parser.add_argument("--llm-assistant-api-key-env", default="SITE_AGENT_EVAL_LLM_API_KEY", help="Environment variable containing the LLM assistant API key.")
+    parser.add_argument("--llm-assistant-blend", type=float, default=0.80, help="Blend ratio inside judged dimensions, capped at 1.00.")
     args = parser.parse_args()
     _apply_target(args)
 
@@ -34,9 +44,8 @@ def main() -> None:
     if profile and args.url == DEFAULT_URL and profile.get("default_url"):
         args.url = profile["default_url"]
 
-    run_name = _clean_name(args.name or args.suffix or "_".join(part for part in [args.profile, args.mode, args.suite] if part))
-    run_out_dir = out_dir / run_name
-    run_label = _next_run_label(run_out_dir, run_name)
+    run_label = _next_run_label(out_dir)
+    run_out_dir = out_dir / run_label
 
     if args.mode == "mock":
         events_path = Path(args.events) if args.events else ROOT / "sample_logs" / "sample_green_man_events.jsonl"
@@ -59,18 +68,38 @@ def main() -> None:
             capture_config=profile.get("capture") if profile else None,
             normalizer_config=profile.get("normalizer_map") if profile else None,
         )
+        if args.capture_only:
+            print("Capture complete:")
+            print(f"- events: {events_path}")
+            print("Evaluation skipped because --capture-only was set.")
+            return
 
-    paths = run_evaluation(
-        suite=args.suite,
-        events_path=events_path,
-        out_dir=run_out_dir,
-        run_label=run_label,
-        image_detail_limit=args.image_detail_limit,
-        profile=profile,
-    )
+    try:
+        paths = run_evaluation(
+            suite=args.suite,
+            events_path=events_path,
+            out_dir=run_out_dir,
+            run_label=run_label,
+            image_detail_limit=args.image_detail_limit,
+            profile=profile,
+            llm_assistant_config=build_llm_assistant_config(
+                enabled=args.llm_assistant,
+                model=args.llm_assistant_model,
+                base_url=args.llm_assistant_base_url,
+                api_key_env=args.llm_assistant_api_key_env,
+                blend=args.llm_assistant_blend,
+            ),
+        )
+    except AgentDataError as exc:
+        print("[AGENT DATA ERROR] Evaluation aborted before report generation.")
+        print(f"[AGENT DATA ERROR] {exc.check.summary()}")
+        print("[AGENT DATA ERROR] Webshow index was not updated.")
+        raise SystemExit(2) from exc
     print("Evaluation complete:")
     for name, path in paths.items():
         print(f"- {name}: {path}")
+    webshow_index = build_webshow_index(ROOT)
+    print(f"- webshow_index: {webshow_index}")
 
 
 def _clean_name(value: str) -> str:
@@ -92,19 +121,16 @@ def _apply_target(args: argparse.Namespace) -> None:
     args.suite = suite
 
 
-def _next_run_label(run_out_dir: Path, run_name: str) -> str:
-    existing = sorted(run_out_dir.glob(f"{run_name}_*_eval_report.md"))
+def _next_run_label(out_dir: Path) -> str:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(path for path in out_dir.iterdir() if path.is_dir())
     numbers = []
     for path in existing:
-        stem = path.stem
-        prefix = f"{run_name}_"
-        suffix = "_eval_report"
-        if not stem.startswith(prefix) or not stem.endswith(suffix):
-            continue
-        number_text = stem[len(prefix) : -len(suffix)]
-        if number_text.isdigit():
+        number_text = path.name.split("_", 1)[0]
+        if number_text.isdigit() and len(number_text) == 3:
             numbers.append(int(number_text))
-    return f"{run_name}_{(max(numbers) + 1) if numbers else 1:03d}"
+    sequence = (max(numbers) + 1) if numbers else 1
+    return f"{sequence:03d}_{datetime.now().strftime('%y_%m_%d_%H')}"
 
 
 if __name__ == "__main__":

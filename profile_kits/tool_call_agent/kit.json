@@ -1,0 +1,44 @@
+{
+  "kit_id": "tool_call_agent",
+  "schema_version": "profile-kit-v1",
+  "version": "0.1.0",
+  "description": "Reusable defaults for Agents that expose structured functionCall/functionResponse tool traces.",
+  "normalizer_map": {
+    "log_adapter": {
+      "tool_trace": {
+        "parts_path": ["content", "parts"],
+        "call_key": "functionCall",
+        "result_key": "functionResponse",
+        "name_key": "name",
+        "id_key": "id",
+        "args_key": "args",
+        "response_key": "response"
+      },
+      "final_response": {
+        "partial_key": "partial",
+        "final_value": false,
+        "text_key": "text",
+        "skip_if_tool_call_present": true
+      },
+      "runtime_errors": {
+        "message_error_key": "error",
+        "tool_error_statuses": ["error", "failed", "failure"],
+        "tool_error_keys": ["error", "error_message"]
+      }
+    },
+    "skill_map": {
+      "request_user_input": "interaction",
+      "update_plan": "planning",
+      "load_skill": "skill-loader"
+    },
+    "argument_compaction": {
+      "redact_args": ["image_url", "image_base64"]
+    }
+  },
+  "tool_registry": {
+    "data_flow_rules": {
+      "arg_sources": []
+    },
+    "tools": []
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "kit_id": "visual_paged_search_evidence",
+  "schema_version": "profile-kit-v1",
+  "version": "0.1.0",
+  "description": "Reusable oracle-evidence protocol for visual paged search results such as captures, camera result sets, image references, scores, and timestamps.",
+  "normalizer_map": {
+    "oracle_evidence": {
+      "result_set_query_types": ["MODAL", "CAPTURE"],
+      "result_list_path": ["data", "result"],
+      "page_path": ["data", "page"],
+      "query_type_path": ["data", "queryType"],
+      "score_key": "score",
+      "evidence_id_keys": ["captureId", "objectId"],
+      "capture_type_key": "captureType",
+      "point_ref_paths": [["camera", "name"], ["camera", "serial"]],
+      "top_k_limit_default": 10,
+      "point_summary_field": "camera_name",
+      "time_stats_field": "capture_time",
+      "item_fields": {
+        "score": {"path": ["score"]},
+        "capture_time": {"path_any": [["captureTime"], ["capture_time"]]},
+        "capture_type": {"path_any": [["captureType"], ["capture_type"]]},
+        "camera_serial": {"path": ["camera", "serial"]},
+        "camera_name": {"path_any": [["camera", "name"], ["camera", "serial"]], "default": "unknown"},
+        "bbox_or_position": {"path_any": [["mono", "position"], ["face", "position"], ["position"]]},
+        "big_image_ref_present": {"path_any": [["bigImage", "url"], ["bigImage", "imageUrl"]], "as_bool": true},
+        "crop_image_ref_present": {"path_any": [["mono", "image", "url"], ["mono", "image", "imageUrl"]], "as_bool": true},
+        "evidence_id": {"path_any": [["captureId"], ["objectId"], ["objId"], ["id"]]}
+      }
+    }
+  }
+}

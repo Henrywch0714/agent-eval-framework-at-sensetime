@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import json
 import re
-import statistics
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .evidence_aggregator import aggregate_evidence, collect_evidence_from_tool_results
+from .log_adapter import (
+    build_runs,
+    extract_response_texts,
+    extract_runtime_errors,
+    extract_tool_items,
+    extract_usage,
+    is_tool_response_continuation,
+    request_text,
+)
 from .provenance import attach_provenance
 from .schema import JsonDict, SCHEMA_RUN, SCHEMA_TRACE
 
@@ -43,7 +51,7 @@ def normalize_capture(
 ) -> tuple[list[JsonDict], list[JsonDict]]:
     events = load_jsonl(events_path)
     config = normalizer_config or {}
-    raw_runs = _merge_interaction_continuations(_build_runs(events, config), tool_aliases=tool_aliases)
+    raw_runs = _merge_interaction_continuations(build_runs(events, config), tool_aliases=tool_aliases, config=config)
     runs = []
     trace = []
     for index, raw_run in enumerate(raw_runs, 1):
@@ -61,67 +69,7 @@ def normalize_capture(
     return runs, trace
 
 
-def _build_runs(events: list[JsonDict], config: dict[str, Any]) -> list[JsonDict]:
-    runs: list[JsonDict] = []
-    current: JsonDict | None = None
-    last_run: JsonDict | None = None
-    for event in events:
-        kind = event.get("kind")
-        if _is_run_start_event(event, config):
-            current = {
-                "request": _parse_json(event.get("post_data_preview") or "{}"),
-                "request_event": event,
-                "messages": [],
-                "image_summaries": [],
-                "events": [event],
-            }
-            runs.append(current)
-            last_run = current
-            continue
-        if _is_retry_start_event(event, config) and last_run is not None:
-            current = last_run
-            current.setdefault("events", []).append(event)
-            current.setdefault("messages", []).append({"__attempt_boundary__": True, "reason": "retry", "ts": event.get("ts")})
-            current.setdefault("continuations", []).append(
-                {
-                    "type": "retry",
-                    "url": event.get("url"),
-                    "ts": event.get("ts"),
-                }
-            )
-            continue
-        if current is not None:
-            current["events"].append(event)
-            if kind == "sse_message":
-                current["messages"].append(event.get("data"))
-            elif kind == "multimodal_summary":
-                current["image_summaries"].append(event.get("summary") or {})
-            elif kind == "sse_close":
-                current = None
-            continue
-        if last_run is not None and kind == "multimodal_summary":
-            last_run["image_summaries"].append(event.get("summary") or {})
-    return runs
-
-
-def _is_run_start_event(event: JsonDict, config: dict[str, Any]) -> bool:
-    if event.get("kind") != "network_request":
-        return False
-    parts = ((config.get("event_grouping") or {}).get("run_request_url_parts") or [])
-    if parts:
-        return any(part in str(event.get("url") or "") for part in parts)
-    payload = _parse_json(event.get("post_data_preview") or "{}")
-    return isinstance(payload.get("newMessage"), dict)
-
-
-def _is_retry_start_event(event: JsonDict, config: dict[str, Any]) -> bool:
-    if event.get("kind") != "network_request":
-        return False
-    parts = ((config.get("event_grouping") or {}).get("retry_request_url_parts") or [])
-    return bool(parts) and any(part in str(event.get("url") or "") for part in parts)
-
-
-def _merge_interaction_continuations(runs: list[JsonDict], tool_aliases: dict[str, str] | None = None) -> list[JsonDict]:
+def _merge_interaction_continuations(runs: list[JsonDict], tool_aliases: dict[str, str] | None = None, config: dict[str, Any] | None = None) -> list[JsonDict]:
     """Merge tool-driven user input continuations into the parent user turn.
 
     Some agent runtimes emit a fresh request after a tool asks for
@@ -130,13 +78,14 @@ def _merge_interaction_continuations(runs: list[JsonDict], tool_aliases: dict[st
     search -> answer. Keeping it split would under-score tool order and final
     response quality.
     """
+    config = config or {}
     merged: list[JsonDict] = []
     for run in runs:
-        request_text = _request_text(run.get("request") or {})
-        if request_text.startswith("functionResponse:request_user_input") and merged and _has_tool_call(merged[-1], "request_user_input", tool_aliases):
+        request = request_text(run.get("request") or {}, config)
+        if is_tool_response_continuation(request, "request_user_input", config) and merged and _has_tool_call(merged[-1], "request_user_input", tool_aliases, config):
             parent = merged[-1]
             parent.setdefault("messages", []).extend(run.get("messages") or [])
-            parent.setdefault("image_summaries", []).extend(run.get("image_summaries") or [])
+            parent.setdefault("evidence_summaries", []).extend(run.get("evidence_summaries") or run.get("image_summaries") or [])
             parent.setdefault("events", []).extend(run.get("events") or [])
             parent.setdefault("continuations", []).append(request_text)
             continue
@@ -144,8 +93,8 @@ def _merge_interaction_continuations(runs: list[JsonDict], tool_aliases: dict[st
     return merged
 
 
-def _has_tool_call(raw_run: JsonDict, tool_name: str, tool_aliases: dict[str, str] | None = None) -> bool:
-    return any(item.get("kind") == "call" and item.get("name") == tool_name for item in _extract_tool_items(raw_run.get("messages") or [], tool_aliases))
+def _has_tool_call(raw_run: JsonDict, tool_name: str, tool_aliases: dict[str, str] | None = None, config: dict[str, Any] | None = None) -> bool:
+    return any(item.get("kind") == "call" and item.get("name") == tool_name for item in extract_tool_items(raw_run.get("messages") or [], tool_aliases, config or {}))
 
 
 def normalize_run(
@@ -159,31 +108,34 @@ def normalize_run(
 ) -> tuple[JsonDict, list[JsonDict]]:
     request = raw_run.get("request") or {}
     messages = raw_run.get("messages") or []
-    tool_items = _extract_tool_items(messages, tool_aliases)
-    response_texts = _extract_response_texts(messages)
-    usage = _extract_usage(messages)
-    task = _request_text(request)
     config = normalizer_config or {}
-    image_summaries = raw_run.get("image_summaries") or _image_summaries_from_tool_results(tool_items, image_detail_limit, config)
+    tool_items = extract_tool_items(messages, tool_aliases, config)
+    response_texts = extract_response_texts(messages, config)
+    usage = extract_usage(messages, config)
+    task = request_text(request, config)
+    evidence_summaries = raw_run.get("evidence_summaries") or raw_run.get("image_summaries") or collect_evidence_from_tool_results(tool_items, config)
     final_text = response_texts[-1] if response_texts else ""
     run_id = f"RUN-{index:04d}"
     tool_chain = _normalize_tool_chain(tool_items, config)
     tool_results = _summarize_tool_results(tool_items, run_id, tool_registry or {}, config)
     data_lineage = attach_provenance(tool_chain, tool_results, tool_registry=tool_registry)
 
+    oracle_evidence = aggregate_evidence(evidence_summaries, config)
     observed = {
         "token_usage": _summarize_usage(usage),
+        "runtime_errors": extract_runtime_errors(messages, config, _clip_compact),
         "task_understanding": _infer_task_understanding(task, tool_items, config),
         "plan": _extract_plan(tool_items),
+        "explicit_plan": _extract_explicit_plan(tool_items),
         "skill_chain": _infer_skill_chain(tool_items, skill_map=skill_map),
         "tool_chain": tool_chain,
         "tool_results": tool_results,
         "data_lineage": data_lineage,
         "tool_args": _summarize_tool_args(tool_items, config),
-        "oracle_evidence": _summarize_oracle_evidence(image_summaries),
+        "oracle_evidence": oracle_evidence,
         "final_response": {
             "text": final_text,
-            "claims": _extract_response_claims(final_text, config),
+            "claims": _extract_response_claims(final_text, config, oracle_evidence),
         },
         "safety_flags": _detect_safety_flags(task, final_text, config),
     }
@@ -196,7 +148,7 @@ def normalize_run(
         "user_task": task,
         "observed": observed,
     }
-    return run, _trace_from_run(run, tool_items, image_summaries, config)
+    return run, _trace_from_run(run, tool_items, evidence_summaries, config)
 
 
 def _parse_json(text: str) -> JsonDict:
@@ -238,82 +190,12 @@ def _first_key(value: dict[str, Any], keys: list[str]) -> Any:
     return None
 
 
-def _request_text(request: JsonDict) -> str:
-    parts = ((request.get("newMessage") or {}).get("parts") or [])
-    if not parts:
-        return ""
-    first = parts[0]
-    if isinstance(first, dict) and "text" in first:
-        return str(first.get("text") or "")
-    if isinstance(first, dict) and "functionResponse" in first:
-        response = first["functionResponse"]
-        return f"functionResponse:{response.get('name')} => {response.get('response')}"
-    return json.dumps(first, ensure_ascii=False)
-
-
-def _extract_tool_items(messages: list[Any], tool_aliases: dict[str, str] | None = None) -> list[JsonDict]:
-    items = []
-    attempt = 1
-    for data in messages:
-        if not isinstance(data, dict):
-            continue
-        if data.get("__attempt_boundary__"):
-            attempt += 1
-            items.append({"kind": "attempt_boundary", "attempt": attempt, "reason": data.get("reason")})
-            continue
-        for part in (data.get("content") or {}).get("parts") or []:
-            if not isinstance(part, dict):
-                continue
-            if "functionCall" in part:
-                call = part["functionCall"]
-                raw_name = call.get("name")
-                items.append(
-                    {
-                        "kind": "call",
-                        "attempt": attempt,
-                        "name": _canonical_tool_name(raw_name, tool_aliases),
-                        "raw_name": raw_name,
-                        "id": call.get("id"),
-                        "args": call.get("args") or {},
-                    }
-                )
-            if "functionResponse" in part:
-                response = part["functionResponse"]
-                raw_name = response.get("name")
-                items.append(
-                    {
-                        "kind": "result",
-                        "attempt": attempt,
-                        "name": _canonical_tool_name(raw_name, tool_aliases),
-                        "raw_name": raw_name,
-                        "id": response.get("id"),
-                        "response": response.get("response"),
-                    }
-                )
-    return items
-
-
-def _canonical_tool_name(name: Any, tool_aliases: dict[str, str] | None = None) -> str:
-    text = str(name or "")
-    return (tool_aliases or {}).get(text, text)
-
-
-def _extract_response_texts(messages: list[Any]) -> list[str]:
-    texts = []
-    for data in messages:
-        if not isinstance(data, dict) or data.get("partial") is not False:
-            continue
-        parts = (data.get("content") or {}).get("parts") or []
-        if any(isinstance(part, dict) and "functionCall" in part for part in parts):
-            continue
-        text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
-        if text.strip():
-            texts.append(text.strip())
-    return texts
-
-
-def _extract_usage(messages: list[Any]) -> list[JsonDict]:
-    return [msg["usageMetadata"] for msg in messages if isinstance(msg, dict) and isinstance(msg.get("usageMetadata"), dict)]
+def _clip_compact(value: Any, limit: int = 220) -> str:
+    if isinstance(value, str):
+        text = " ".join(value.split())
+    else:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    return text[:limit]
 
 
 def _infer_task_understanding(task: str, tool_items: list[JsonDict], config: dict[str, Any]) -> JsonDict:
@@ -407,6 +289,26 @@ def _extract_plan(tool_items: list[JsonDict]) -> list[str]:
             if args.get("plan"):
                 return [str(args["plan"])]
     return [str(item.get("name")) for item in tool_items if item.get("kind") == "call" and item.get("name")]
+
+
+def _extract_explicit_plan(tool_items: list[JsonDict]) -> list[JsonDict]:
+    plans = []
+    for item in tool_items:
+        if item.get("kind") != "call" or item.get("name") != "update_plan":
+            continue
+        args = item.get("args") or {}
+        plans.append(
+            {
+                "tool_name": item.get("name"),
+                "attempt": item.get("attempt") or 1,
+                "plan": str(args.get("plan") or ""),
+                "steps": [str(step) for step in args.get("steps") or []] if isinstance(args.get("steps"), list) else [],
+                "raw_args": args,
+            }
+        )
+    if plans:
+        return plans
+    return []
 
 
 def _infer_skill_chain(tool_items: list[JsonDict], skill_map: dict[str, str] | None = None) -> list[JsonDict]:
@@ -622,100 +524,6 @@ def _summarize_tool_args(tool_items: list[JsonDict], config: dict[str, Any]) -> 
     return out
 
 
-def _image_summaries_from_tool_results(tool_items: list[JsonDict], image_detail_limit: int, config: dict[str, Any]) -> list[JsonDict]:
-    rules = config.get("oracle_evidence") or {}
-    summaries = []
-    for item in tool_items:
-        if item.get("kind") != "result":
-            continue
-        response = item.get("response")
-        data = response.get("data") if isinstance(response, dict) and isinstance(response.get("data"), dict) else {}
-        query_type = _get_path(response, rules.get("query_type_path") or [])
-        if rules.get("result_set_query_types") and query_type not in set(rules.get("result_set_query_types") or []):
-            continue
-        results = _get_path(response, rules.get("result_list_path") or [])
-        if not isinstance(results, list):
-            continue
-        summaries.append(_summarize_result_set(response, results[:image_detail_limit], rules))
-    return summaries
-
-
-def _summarize_result_set(response: JsonDict, results: list[JsonDict], rules: dict[str, Any]) -> JsonDict:
-    score_key = rules.get("score_key") or "score"
-    scores = [float(item[score_key]) for item in results if isinstance(item, dict) and isinstance(item.get(score_key), (int, float))]
-    points = Counter()
-    top_k = []
-    for idx, item in enumerate(results, 1):
-        point = _first_path(item, rules.get("point_ref_paths") or []) or "unknown"
-        points[str(point)] += 1
-        top_k.append(
-            {
-                "rank": idx,
-                "evidence_id": _first_key(item, rules.get("evidence_id_keys") or []) or f"ev-{idx:03d}",
-                "score": item.get(score_key),
-                "capture_type": item.get(rules.get("capture_type_key") or "capture_type"),
-                "point_ref": point,
-            }
-        )
-    return {
-        "query_type": _get_path(response, rules.get("query_type_path") or []),
-        "page": _get_path(response, rules.get("page_path") or []) or {},
-        "result_count_observed": len(results),
-        "score_stats": _score_stats(scores),
-        "distinct_points": len(points) if points else None,
-        "point_summary": [{"point_ref": key, "count": val} for key, val in points.most_common(5)],
-        "top_k_refs": top_k,
-    }
-
-
-def _summarize_oracle_evidence(image_summaries: list[JsonDict]) -> JsonDict:
-    if not image_summaries:
-        return {"image_result_sets": 0, "total_count": None, "top_k_count": 0, "score_stats": {}, "distinct_points": None}
-    chosen = image_summaries[-1]
-    page = chosen.get("page") or {}
-    top_k_refs = chosen.get("top_k_refs") or _top_k_refs_from_results(chosen.get("results") or [])
-    point_summary = chosen.get("point_summary") or _point_summary_from_top_k(top_k_refs)
-    distinct_points = chosen.get("distinct_points")
-    if distinct_points is None and point_summary:
-        distinct_points = len(point_summary)
-    return {
-        "image_result_sets": len(image_summaries),
-        "query_type": chosen.get("query_type"),
-        "total_count": page.get("total"),
-        "top_k_count": chosen.get("result_count_observed") or len(top_k_refs),
-        "score_stats": chosen.get("score_stats") or chosen.get("score_stats_observed") or {},
-        "distinct_points": distinct_points,
-        "point_summary": point_summary,
-        "top_k_refs": top_k_refs,
-    }
-
-
-def _top_k_refs_from_results(results: list[JsonDict]) -> list[JsonDict]:
-    out = []
-    for idx, item in enumerate(results, 1):
-        out.append(
-            {
-                "rank": idx,
-                "evidence_id": item.get("id") or item.get("result_id") or f"ev-{idx:03d}",
-                "score": item.get("score"),
-                "capture_type": item.get("type"),
-                "point_ref": item.get("point_ref") or "unknown",
-            }
-        )
-    return out
-
-
-def _point_summary_from_top_k(top_k_refs: list[JsonDict]) -> list[JsonDict]:
-    counts = Counter(str(item.get("point_ref") or "unknown") for item in top_k_refs)
-    return [{"point_ref": key, "count": value} for key, value in counts.most_common(5)]
-
-
-def _score_stats(scores: list[float]) -> JsonDict:
-    if not scores:
-        return {}
-    return {"count": len(scores), "min": min(scores), "avg": statistics.mean(scores), "max": max(scores)}
-
-
 def _summarize_usage(usage: list[JsonDict]) -> JsonDict:
     if not usage:
         return {"steps": 0, "prompt_tokens": 0, "candidate_tokens": 0, "total_tokens": 0}
@@ -728,23 +536,212 @@ def _summarize_usage(usage: list[JsonDict]) -> JsonDict:
     }
 
 
-def _extract_response_claims(text: str, config: dict[str, Any]) -> JsonDict:
+def _extract_response_claims(text: str, config: dict[str, Any], oracle: dict[str, Any] | None = None) -> JsonDict:
     rules = config.get("response_claims") or {}
-    claims: JsonDict = {
-        "contains_identity_conclusion": _matches_any_pattern(text, rules.get("identity_conclusion_patterns") or []),
-        "contains_law_enforcement_conclusion": _matches_any_pattern(text, rules.get("law_enforcement_conclusion_patterns") or []),
-        "contains_permission_bypass": any(token in text for token in rules.get("permission_bypass_tokens") or []),
-    }
-    total = _first_int_after(text, rules.get("total_prefixes") or [])
-    if total is not None:
-        claims["total_count"] = total
-    points = _first_int_before(text, rules.get("distinct_point_suffixes") or [])
-    if points is not None:
-        claims["distinct_points"] = points
-    high = _first_int_near(text, rules.get("high_confidence_anchors") or [])
-    if high is not None:
-        claims["high_confidence_count"] = high
+    oracle = oracle or {}
+    claims: JsonDict = {}
+    claim_items: list[JsonDict] = []
+    for rule in _boolean_claim_rules(rules):
+        value = bool(_extract_claim_value(text, rule))
+        output_key = rule.get("output_key")
+        if output_key:
+            claims[str(output_key)] = value
+        if value and rule.get("add_claim_item"):
+            claim_type = str(rule.get("claim_type") or output_key)
+            claim_items.append(
+                _claim_item(
+                    claim_id=f"claim_{claim_type}",
+                    claim_type=claim_type,
+                    value=True,
+                    text=text,
+                    evidence_field=rule.get("evidence_field"),
+                    evidence_value=_path_from_oracle(oracle, rule.get("evidence_path")),
+                    supported=None,
+                    support_status=rule.get("support_status"),
+                    note=str(rule.get("note") or ""),
+                )
+            )
+    for rule in _claim_extractors(rules):
+        value = _extract_claim_value(text, rule)
+        if value is None:
+            continue
+        output_key = rule.get("output_key") or rule.get("claim_type")
+        claim_type = str(rule.get("claim_type") or output_key)
+        if output_key:
+            claims[str(output_key)] = value
+        support = _claim_support(value, oracle, rule)
+        claim_items.append(
+            _claim_item(
+                claim_id=f"claim_{claim_type}",
+                claim_type=claim_type,
+                value=value,
+                text=text,
+                evidence_field=rule.get("evidence_field") or _evidence_field(rule),
+                evidence_value=support.get("evidence_value"),
+                supported=support.get("supported"),
+                support_status=support.get("support_status"),
+                note=support.get("note") or str(rule.get("note") or ""),
+            )
+        )
+    claims["claim_items"] = claim_items
     return claims
+
+
+def _claim_item(
+    claim_id: str,
+    claim_type: str,
+    value: Any,
+    text: str,
+    evidence_field: str | None,
+    evidence_value: Any,
+    supported: bool | None,
+    support_status: str | None = None,
+    note: str = "",
+) -> JsonDict:
+    return {
+        "claim_id": claim_id,
+        "claim_type": claim_type,
+        "value": value,
+        "text_span": _claim_text_span(text, value),
+        "evidence_field": evidence_field,
+        "evidence_value": evidence_value,
+        "supported": supported,
+        "support_status": support_status or _support_status(supported),
+        "note": note,
+    }
+
+
+def _boolean_claim_rules(rules: JsonDict) -> list[JsonDict]:
+    configured = rules.get("boolean_flags")
+    if isinstance(configured, list):
+        return [item for item in configured if isinstance(item, dict)]
+    return []
+
+
+def _claim_extractors(rules: JsonDict) -> list[JsonDict]:
+    configured = rules.get("claim_extractors")
+    if isinstance(configured, list):
+        return [item for item in configured if isinstance(item, dict)]
+    return []
+
+
+def _extract_claim_value(text: str, rule: JsonDict) -> Any:
+    method = rule.get("method")
+    if method == "number_after_prefix":
+        return _first_int_after(text, rule.get("prefixes") or [])
+    if method == "number_before_suffix":
+        return _first_int_before(text, rule.get("suffixes") or [])
+    if method == "number_near_anchor":
+        return _first_int_near(text, rule.get("anchors") or [])
+    if method == "pattern_exists":
+        return _matches_any_pattern(text, rule.get("patterns") or [])
+    if method == "contains_any":
+        return any(token in text for token in rule.get("tokens") or [])
+    if method == "regex_first_int":
+        match = re.search(rule.get("pattern") or r"$^", text)
+        return int(match.group(1)) if match and match.groups() and match.group(1).isdigit() else None
+    return None
+
+
+def _claim_support(value: Any, oracle: JsonDict, rule: JsonDict) -> JsonDict:
+    evidence_value = _path_from_oracle(oracle, rule.get("evidence_path"))
+    if _soft_coverage_applies(value, evidence_value, oracle, rule):
+        return {
+            "evidence_value": evidence_value,
+            "supported": None,
+            "support_status": rule.get("soft_support_status") or "not_fully_verifiable_sample",
+            "note": _format_rule_note(rule.get("soft_note_template") or "", value, evidence_value, oracle, rule),
+        }
+    supported = _compare_claim(value, evidence_value, rule)
+    return {
+        "evidence_value": evidence_value,
+        "supported": supported,
+        "support_status": None,
+        "note": str(rule.get("note") or ""),
+    }
+
+
+def _path_from_oracle(oracle: JsonDict, path: Any) -> Any:
+    if not path:
+        return None
+    if isinstance(path, str):
+        parts = path.split(".")
+        if parts and parts[0] == "oracle_evidence":
+            parts = parts[1:]
+        return _get_path(oracle, parts)
+    if isinstance(path, list):
+        return _get_path(oracle, path)
+    return None
+
+
+def _evidence_field(rule: JsonDict) -> str | None:
+    path = rule.get("evidence_path")
+    if isinstance(path, str):
+        return path
+    if isinstance(path, list):
+        return "oracle_evidence." + ".".join(str(item) for item in path)
+    return None
+
+
+def _soft_coverage_applies(value: Any, evidence_value: Any, oracle: JsonDict, rule: JsonDict) -> bool:
+    if rule.get("coverage_policy") != "soft_if_partial_and_claim_ge_observed":
+        return False
+    coverage_ratio = float(_path_from_oracle(oracle, rule.get("coverage_path") or ["coverage_ratio"]) or 0)
+    return coverage_ratio < 1 and isinstance(value, (int, float)) and isinstance(evidence_value, (int, float)) and value >= evidence_value
+
+
+def _compare_claim(value: Any, evidence_value: Any, rule: JsonDict) -> bool | None:
+    comparator = rule.get("comparator") or "equals"
+    if evidence_value is None:
+        return None
+    if comparator == "equals":
+        return value == evidence_value
+    if comparator == "evidence_gte_threshold":
+        threshold = rule.get("threshold")
+        return evidence_value >= threshold if isinstance(evidence_value, (int, float)) and isinstance(threshold, (int, float)) else None
+    if comparator == "gte":
+        return value >= evidence_value if isinstance(value, (int, float)) and isinstance(evidence_value, (int, float)) else None
+    if comparator == "lte":
+        return value <= evidence_value if isinstance(value, (int, float)) and isinstance(evidence_value, (int, float)) else None
+    return None
+
+
+def _format_rule_note(template: str, claim_value: Any, evidence_value: Any, oracle: JsonDict, rule: JsonDict) -> str:
+    if not template:
+        return ""
+    values = {
+        "claim_value": claim_value,
+        "evidence_value": evidence_value,
+        "coverage_ratio": float(_path_from_oracle(oracle, rule.get("coverage_path") or ["coverage_ratio"]) or 0),
+        "observed_count": _path_from_oracle(oracle, rule.get("observed_count_path") or ["observed_count"]),
+        "total_count": _path_from_oracle(oracle, rule.get("total_count_path") or ["total_count"]),
+        "threshold": rule.get("threshold"),
+        "claim_type": rule.get("claim_type"),
+    }
+    try:
+        return template.format(**values)
+    except Exception:
+        return template
+
+
+def _support_status(supported: bool | None) -> str:
+    if supported is True:
+        return "supported"
+    if supported is False:
+        return "contradicted"
+    return "not_observed"
+
+
+def _claim_text_span(text: str, value: Any) -> str:
+    if not text:
+        return ""
+    value_text = str(value)
+    index = text.find(value_text)
+    if index == -1:
+        return text[:80]
+    start = max(0, index - 24)
+    end = min(len(text), index + len(value_text) + 36)
+    return text[start:end]
 
 
 def _matches_any_pattern(text: str, patterns: list[str]) -> bool:
@@ -784,6 +781,9 @@ def _first_int_near(text: str, anchors: list[str]) -> int | None:
 
 
 def _detect_safety_flags(task: str, response: str, config: dict[str, Any]) -> list[str]:
+    policy = config.get("safety_policy") or {}
+    if policy:
+        return _detect_policy_safety_flags(task, response, policy)
     rules = config.get("safety_flags") or {}
     text = f"{task}\n{response}"
     flags = []
@@ -803,7 +803,55 @@ def _detect_safety_flags(task: str, response: str, config: dict[str, Any]) -> li
     return sorted(set(flags))
 
 
-def _trace_from_run(run: JsonDict, tool_items: list[JsonDict], image_summaries: list[JsonDict], config: dict[str, Any]) -> list[JsonDict]:
+def _detect_policy_safety_flags(task: str, response: str, policy: dict[str, Any]) -> list[str]:
+    text = f"{task}\n{response}"
+    flags: list[str] = []
+    for rule in [*(policy.get("risk_detectors") or []), *(policy.get("response_flags") or [])]:
+        if not isinstance(rule, dict):
+            continue
+        target_text = _safety_scope_text(rule.get("scope"), task, response, text)
+        if _safety_rule_matches(rule, target_text):
+            flags.append(str(rule.get("flag") or rule.get("name") or ""))
+    for rule in policy.get("combined_flags") or []:
+        if not isinstance(rule, dict):
+            continue
+        if any(token in text for token in rule.get("required_any") or []) and any(token in text for token in rule.get("with_any") or []):
+            flags.append(str(rule.get("flag") or rule.get("name") or ""))
+    for rule in policy.get("regex_flags") or []:
+        if not isinstance(rule, dict):
+            continue
+        target_text = _safety_scope_text(rule.get("scope"), task, response, text)
+        if re.search(rule.get("pattern") or r"$^", target_text):
+            flags.append(str(rule.get("flag") or rule.get("name") or ""))
+    return sorted({flag for flag in flags if flag})
+
+
+def _safety_scope_text(scope: Any, task: str, response: str, combined: str) -> str:
+    scope_text = str(scope or "").lower()
+    if scope_text == "task":
+        return task
+    if scope_text == "response":
+        return response
+    return combined
+
+
+def _safety_rule_matches(rule: dict[str, Any], text: str) -> bool:
+    method = str(rule.get("method") or "contains_any")
+    tokens = [str(token) for token in rule.get("tokens") or []]
+    if method == "contains_all":
+        base_match = bool(tokens) and all(token in text for token in tokens)
+    elif method == "pattern_exists":
+        patterns = [str(pattern) for pattern in rule.get("patterns") or rule.get("tokens") or []]
+        base_match = any(re.search(pattern, text) for pattern in patterns)
+    else:
+        base_match = any(token in text for token in tokens)
+    with_any = [str(token) for token in rule.get("with_any") or []]
+    if with_any:
+        return base_match and any(token in text for token in with_any)
+    return base_match
+
+
+def _trace_from_run(run: JsonDict, tool_items: list[JsonDict], evidence_summaries: list[JsonDict], config: dict[str, Any]) -> list[JsonDict]:
     seq = 1
     base = {"schema_version": SCHEMA_TRACE, "run_id": run["run_id"], "case_id": None}
     events = [
@@ -811,7 +859,7 @@ def _trace_from_run(run: JsonDict, tool_items: list[JsonDict], image_summaries: 
         _trace_event(base, seq + 1, "task_understanding", "agent", run["observed"]["task_understanding"]),
     ]
     seq += 2
-    events.append(_trace_event(base, seq, "agent_plan", "agent", {"steps": run["observed"]["plan"]}))
+    events.append(_trace_event(base, seq, "agent_plan", "agent", {"steps": run["observed"]["plan"], "raw": run["observed"].get("explicit_plan") or []}))
     seq += 1
     for item in tool_items:
         if item.get("kind") == "call":
@@ -821,7 +869,7 @@ def _trace_from_run(run: JsonDict, tool_items: list[JsonDict], image_summaries: 
             payload = {"tool_name": item.get("name"), "oracle_assumption": True, "summary": _response_summary(item.get("response"))}
             events.append(_trace_event(base, seq, "tool_result_summary", "tool", payload))
         seq += 1
-    for summary in image_summaries:
+    for summary in evidence_summaries:
         events.append(_trace_event(base, seq, "oracle_evidence_summary", "tool", summary))
         seq += 1
     events.append(_trace_event(base, seq, "final_response", "agent", run["observed"]["final_response"]))
